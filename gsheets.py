@@ -1,7 +1,7 @@
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 from datetime import datetime
-from config import GOOGLE_SHEETS_CREDENTIALS_FILE, SPREADSHEET_ID, WORKSHEET_NAME
+from config import GOOGLE_SHEETS_CREDENTIALS_FILE, SPREADSHEET_ID, WORKSHEET_NAME, ADMIN_IDS
 
 
 class GoogleSheetsClient:
@@ -16,7 +16,7 @@ class GoogleSheetsClient:
         self._init_worksheet()
 
     def _init_worksheet(self):
-        """Инициализация листа с обновлёнными заголовками"""
+        """Инициализация листа с новыми полями"""
         try:
             self.spreadsheet = self.client.open_by_key(SPREADSHEET_ID)
             try:
@@ -24,27 +24,48 @@ class GoogleSheetsClient:
             except gspread.exceptions.WorksheetNotFound:
                 self.worksheet = self.spreadsheet.add_worksheet(
                     title=WORKSHEET_NAME,
-                    rows=1000,
+                    rows=50,
                     cols=10
                 )
-                # Новые заголовки в snake_case
                 self.worksheet.append_row([
                     "user_id",
                     "telegram_name",
                     "full_name",
-                    "message",
-                    "timestamp"
+                    "is_admin",
+                    "registration_date"
                 ])
-
-            # Проверяем заголовки
-            current_headers = self.worksheet.row_values(1)
-            expected_headers = ["user_id", "telegram_name", "full_name", "message", "timestamp"]
-            if current_headers != expected_headers:
-                self._update_headers(expected_headers)
 
         except Exception as e:
             raise Exception(f"Ошибка инициализации таблицы: {str(e)}")
 
+    def is_admin(self, user_id):
+        """Проверяет, является ли пользователь администратором"""
+        if user_id in ADMIN_IDS:
+            return True
+
+        try:
+            # Ищем в столбце is_admin (индекс 4)
+            cell = self.worksheet.find(str(user_id), in_column=1)
+            if cell:
+                is_admin = self.worksheet.cell(cell.row, 4).value
+                return is_admin == 'TRUE'
+        except:
+            return False
+        return False
+
+    def add_admin(self, admin_id, target_user_id):
+        """Добавляет администратора"""
+        if not self.is_admin(admin_id):
+            return False
+
+        try:
+            cell = self.worksheet.find(str(target_user_id), in_column=1)
+            if cell:
+                self.worksheet.update_cell(cell.row, 4, 'TRUE')
+                return True
+        except:
+            return False
+        return False
     def _update_headers(self, new_headers):
         """Обновление заголовков таблицы"""
         header_range = f"A1:{chr(65 + len(new_headers) - 1)}1"
