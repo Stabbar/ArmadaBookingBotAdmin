@@ -57,6 +57,35 @@ def list_users(message):
     except Exception as e:
         bot.reply_to(message, f"❌ Ошибка: {e}")
 
+
+@bot.message_handler(commands=['removeadmin'])
+def remove_admin(message):
+    admin_id = message.from_user.id
+    if not is_admin(admin_id):
+        bot.reply_to(message, "⛔ Недостаточно прав!")
+        return
+
+    if not message.reply_to_message:
+        bot.reply_to(message, "ℹ Ответьте на сообщение администратора, которого хотите разжаловать")
+        return
+
+    target_user_id = message.reply_to_message.from_user.id
+
+    # Нельзя удалить себя
+    if target_user_id == admin_id:
+        bot.reply_to(message, "❌ Вы не можете снять права с себя!")
+        return
+
+    # Нельзя удалить конфигурационных админов
+    if target_user_id in ADMIN_IDS:
+        bot.reply_to(message, "❌ Этот администратор указан в конфигурации бота!")
+        return
+
+    if gsheets.remove_admin(admin_id, target_user_id):
+        bot.reply_to(message, f"✅ Пользователь @{message.reply_to_message.from_user.username} больше не администратор!")
+    else:
+        bot.reply_to(message, "❌ Не удалось снять права администратора")
+
 @bot.message_handler(commands=['register'])
 def handle_register(message):
     try:

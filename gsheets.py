@@ -31,8 +31,9 @@ class GoogleSheetsClient:
                     "user_id",
                     "telegram_name",
                     "full_name",
-                    "is_admin",
-                    "registration_date"
+                    "message",
+                    "registration_date",
+                    "is_admin"
                 ])
 
         except Exception as e:
@@ -47,7 +48,7 @@ class GoogleSheetsClient:
             # Ищем в столбце is_admin (индекс 4)
             cell = self.worksheet.find(str(user_id), in_column=1)
             if cell:
-                is_admin = self.worksheet.cell(cell.row, 4).value
+                is_admin = self.worksheet.cell(cell.row, 6).value
                 return is_admin == 'TRUE'
         except:
             return False
@@ -61,11 +62,30 @@ class GoogleSheetsClient:
         try:
             cell = self.worksheet.find(str(target_user_id), in_column=1)
             if cell:
-                self.worksheet.update_cell(cell.row, 4, 'TRUE')
+                self.worksheet.update_cell(cell.row, 6, 'TRUE')
                 return True
         except:
             return False
         return False
+
+    def remove_admin(self, admin_id, target_user_id):
+        """Удаляет права администратора"""
+        if not self.is_admin(admin_id):
+            return False
+
+        try:
+            cell = self.worksheet.find(str(target_user_id), in_column=1)
+            if cell:
+                # Проверяем, что это не конфигурационный админ
+                if target_user_id in ADMIN_IDS:
+                    return False
+
+                self.worksheet.update_cell(cell.row, 6, 'FALSE')
+                return True
+        except:
+            return False
+        return False
+
     def _update_headers(self, new_headers):
         """Обновление заголовков таблицы"""
         header_range = f"A1:{chr(65 + len(new_headers) - 1)}1"
