@@ -1,6 +1,4 @@
 import telebot
-from telebot import types
-from datetime import datetime
 from gsheets import GoogleSheetsClient
 from config import TELEGRAM_TOKEN, ADMIN_IDS, TRAINING_CHAT_ID
 from templates_manager import TemplatesManager
@@ -12,6 +10,10 @@ templates_manager = TemplatesManager()
 
 # Глобальный словарь для хранения состояния создания тренировки
 training_states = {}
+
+def is_admin(user_id):
+    """Проверка прав администратора"""
+    return user_id in ADMIN_IDS or gsheets.is_admin(user_id)
 
 @bot.message_handler(commands=['addtemplate'])
 def add_template(message):
@@ -93,10 +95,6 @@ def list_templates(message):
 
 from telebot import types
 from datetime import datetime
-
-# Глобальный словарь для хранения состояния создания тренировки
-training_states = {}
-
 
 @bot.message_handler(commands=['createtrain'])
 def start_training_creation(message):
@@ -222,7 +220,9 @@ def finalize_training_creation(message):
             types.InlineKeyboardButton("Игрок", callback_data='train_role_player'),
             types.InlineKeyboardButton("Вратарь", callback_data='train_role_goalie')
         )
-
+        markup.row(
+            types.InlineKeyboardButton("❌ Отменить запись", callback_data='train_cancel')
+        )
         bot.send_message(
             chat_id=TRAINING_CHAT_ID,
             text=train_text,
@@ -241,10 +241,95 @@ def finalize_training_creation(message):
         if message.from_user.id in training_states:
             del training_states[message.from_user.id]
 
-def is_admin(user_id):
-    """Проверка прав администратора"""
-    return user_id in ADMIN_IDS or gsheets.is_admin(user_id)
 
+@bot.callback_query_handler(func=lambda call: call.data == 'train_cancel')
+def handle_cancel_registration(call):
+    try:
+        user = call.from_user
+
+        # Получаем данные из таблицы
+        user_data = gsheets.get_user_record(user.id)
+        if not user_data or not user_data.get('message'):
+            bot.answer_callback_query(
+                call.id,
+                "❌ Ваши данные не найдены",
+                show_alert=True
+            )
+            return
+
+        user_message = user_data['message']
+
+        # Разбираем текущее сообщение
+        lines = call.message.text.split('\n')
+        players = []
+        goalies = []
+        other_lines = []
+        current_section = None
+        found = False
+
+        for line in lines:
+            if "Игроки:" in line:
+                current_section = "players"
+                other_lines.append(line)
+            elif "Вратари:" in line:
+                current_section = "goalies"
+                other_lines.append(line)
+            elif line.strip().startswith(('1.', '2.', '3.', '4.', '5.', '6.', '7.', '8.', '9.')):
+                if user_message in line:
+                    found = True
+                    continue  # Пропускаем запись пользователя
+
+                if current_section == "players":
+                    players.append(line)
+                elif current_section == "goalies":
+                    goalies.append(line)
+            else:
+                other_lines.append(line)
+
+        if not found:
+            bot.answer_callback_query(
+                call.id,
+                "⚠ Вы не были записаны на эту тренировку",
+                show_alert=True
+            )
+            return
+
+        # Пересчитываем нумерацию
+        players_renumbered = []
+        for i, player in enumerate(players, 1):
+            parts = player.split('.', 1)
+            players_renumbered.append(f"{i}.{parts[1]}")
+
+        goalies_renumbered = []
+        for i, goalie in enumerate(goalies, 1):
+            parts = goalie.split('.', 1)
+            goalies_renumbered.append(f"{i}.{parts[1]}")
+
+        # Формируем новое сообщение
+        new_text = []
+        for line in other_lines:
+            if line == "Игроки:":
+                new_text.append(line)
+                new_text.extend(players_renumbered)
+            elif line == "Вратари:":
+                new_text.append(line)
+                new_text.extend(goalies_renumbered)
+            else:
+                new_text.append(line)
+
+        # Обновляем сообщение
+        bot.edit_message_text(
+            chat_id=call.message.chat.id,
+            message_id=call.message.message_id,
+            text='\n'.join(new_text),
+            reply_markup=call.message.reply_markup
+        )
+
+        bot.answer_callback_query(call.id, "✅ Ваша запись отменена!")
+
+    except Exception as e:
+        print(f"Ошибка: {e}")
+        bot.answer_callback_query(call.id, "❌ Ошибка сервера")
 
 # Команда для проверки прав
 @bot.message_handler(commands=['admin'])
@@ -406,16 +491,22 @@ def handle_training_button(call):
                 other_lines.append(line)
 
         # Проверяем дублирование
-        all_participants = players + goalies
+        all_participants = []
+        for line in lines:
+            if line.strip().startswith(('1.', '2.', '3.', '4.', '5.', '6.', '7.', '8.', '9.')):
+                all_participants.append(line)
+
         if any(user_message in p for p in all_participants):
-            bot.answer_callback_query(call.id, f"⚠ Вы уже записаны как {role}!")
+            bot.answer_callback_query(call.id, f"⚠ Вы уже записаны на тренировку!")
             return
 
         # Добавляем участника в нужный список
         if role == "Игрок":
-            players.append(f"{len(players) + 1}. {user_message}")
+            new_number = len(players) + 1
+            players.append(f"{new_number}. {user_message}")
         else:
-            goalies.append(f"{len(goalies) + 1}. {user_message}")
+            new_number = len(goalies) + 1
+            goalies.append(f"{new_number}. {user_message}")
 
         # Формируем новое сообщение
         new_text = []
