@@ -244,6 +244,7 @@ def finalize_training_creation(message):
 
 @bot.callback_query_handler(func=lambda call: call.data == 'train_cancel')
 def handle_cancel_registration(call):
+    global training_date
     try:
         user = call.from_user
 
@@ -324,6 +325,15 @@ def handle_cancel_registration(call):
             text='\n'.join(new_text),
             reply_markup=call.message.reply_markup
         )
+
+        # Обновляем посещаемость
+        for line in call.message.text.split('\n'):
+            if 'тренировка' in line.lower():
+                date_str = line.split('тренировка')[1].strip().split()[0]
+                training_date = datetime.strptime(date_str, '%d.%m.%Y')
+                break
+
+        gsheets.update_attendance(call.from_user.id, training_date, present=False)
 
         bot.answer_callback_query(call.id, "✅ Ваша запись отменена!")
 
@@ -443,6 +453,7 @@ def save_registration(message, user):
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith('train_role_'))
 def handle_training_button(call):
+    global training_date
     try:
         user = call.from_user
         role = "Игрок" if call.data == 'train_role_player' else "Вратарь"
@@ -527,6 +538,17 @@ def handle_training_button(call):
             text='\n'.join(new_text),
             reply_markup=call.message.reply_markup
         )
+
+        # Получаем дату тренировки из сообщения
+        for line in call.message.text.split('\n'):
+            if 'тренировка' in line.lower():
+                date_str = line.split('тренировка')[1].strip().split()[0]
+                training_date = datetime.strptime(date_str, '%d.%m.%Y')
+                break
+
+        # Обновляем посещаемость
+        role = 'player' if call.data == 'train_role_player' else 'goalie'
+        gsheets.update_attendance(call.from_user.id, training_date, present=True)
 
         bot.answer_callback_query(call.id, f"✅ Вы записаны как {role}!")
 

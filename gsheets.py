@@ -2,7 +2,7 @@ import gspread
 from gspread import worksheet
 from oauth2client.service_account import ServiceAccountCredentials
 from datetime import datetime
-from config import GOOGLE_SHEETS_CREDENTIALS_FILE, SPREADSHEET_ID, WORKSHEET_NAME, ADMIN_IDS
+from config import GOOGLE_SHEETS_CREDENTIALS_FILE, SPREADSHEET_ID, WORKSHEET_NAME, ADMIN_IDS, ATTENDANCE_SHEET_NAME
 
 
 class GoogleSheetsClient:
@@ -143,3 +143,75 @@ class GoogleSheetsClient:
         except Exception as e:
             print(f"Ошибка при поиске пользователя: {e}")
             return None
+
+    def get_attendance_sheet(self):
+        """Возвращает лист с графиком посещений, создает если не существует"""
+        try:
+            spreadsheet = self.client.open_by_key(SPREADSHEET_ID)
+            try:
+                worksheet = spreadsheet.worksheet(ATTENDANCE_SHEET_NAME)
+            except gspread.exceptions.WorksheetNotFound:
+                worksheet = spreadsheet.add_worksheet(
+                    title=ATTENDANCE_SHEET_NAME,
+                    rows=100,
+                    cols=20
+                )
+                # Создаем заголовки
+                worksheet.update('A1:B1', [['ФИО', 'Всего']])
+            return worksheet
+        except Exception as e:
+            print(f"Ошибка доступа к таблице посещений: {e}")
+            raise
+
+    def update_attendance(self, user_id, training_date, present=True):
+        """Обновляет график посещений"""
+        try:
+            # Открываем таблицу посещений
+            worksheet = self.get_attendance_sheet()
+            # Получаем данные
+            records = worksheet.get_all_records()
+            headers = worksheet.row_values(1)
+            date_str = training_date.strftime('%d.%m.%Y')
+
+            # Проверяем/добавляем столбец с датой
+            if date_str not in headers:
+                worksheet.insert_cols([[date_str]], len(headers))
+                headers = worksheet.row_values(1)
+
+            # Ищем пользователя
+            user_data = self.get_user_record(user_id)
+            if not user_data:
+                return False
+
+            user_name = user_data['message']
+            user_row = None
+
+            for i, row in enumerate(worksheet.get_all_values(), 1):
+                if row and row[0] == user_name:
+                    user_row = i
+                    break
+
+            # Если пользователь не найден - добавляем
+            if not user_row:
+                new_row = [user_name] + ['' for _ in range(len(headers) - 1)]
+                worksheet.append_row(new_row)
+                user_row = len(worksheet.get_all_values())
+
+            # Обновляем ячейку
+            col_idx = headers.index(date_str) + 1
+            worksheet.update_cell(user_row, col_idx, '1' if present else '')
+
+            # Обновляем "Всего"
+            total_col = len(headers)
+            if "Всего" not in headers[-1]:
+                worksheet.update_cell(1, total_col, "Всего")
+
+            # Считаем общее количество посещений
+            visits = sum(1 for val in worksheet.row_values(user_row)[1:-1] if val == '1')
+            worksheet.update_cell(user_row, total_col, visits)
+
+            return True
+
+        except Exception as e:
+            print(f"Ошибка обновления посещаемости: {e}")
+            return False
