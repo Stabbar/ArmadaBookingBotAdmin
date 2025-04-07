@@ -1,4 +1,5 @@
 import gspread
+from gspread import worksheet
 from oauth2client.service_account import ServiceAccountCredentials
 from datetime import datetime
 from config import GOOGLE_SHEETS_CREDENTIALS_FILE, SPREADSHEET_ID, WORKSHEET_NAME, ADMIN_IDS
@@ -101,8 +102,9 @@ class GoogleSheetsClient:
     def is_user_exists(self, user_id):
         """Проверяет существование пользователя по ID"""
         try:
-            existing_ids = self.worksheet.col_values(1)
-            return str(user_id) in existing_ids
+            # Ищем в первом столбце (user_id)
+            cell = self.worksheet.find(str(user_id), in_column=1)
+            return cell
         except Exception as e:
             print(f"Ошибка при проверке пользователя: {e}")
             return False
@@ -123,3 +125,21 @@ class GoogleSheetsClient:
         except Exception as e:
             print(f"Ошибка при добавлении записи: {e}")
             return False
+
+    def get_user_record(self, user_id):
+        """Возвращает запись пользователя по ID"""
+        try:
+            cell = self.worksheet.find(str(user_id))
+            if cell:
+                # Предполагаем структуру:
+                # user_id | telegram_name | full_name | message | ...
+                return {
+                    'user_id': self.worksheet.cell(cell.row, 1).value,
+                    'telegram_name': self.worksheet.cell(cell.row, 2).value,
+                    'full_name': self.worksheet.cell(cell.row, 3).value,
+                    'message': self.worksheet.cell(cell.row, 4).value  # 4-й столбец - message
+                }
+            return None
+        except Exception as e:
+            print(f"Ошибка при поиске пользователя: {e}")
+            return None
