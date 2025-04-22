@@ -3,7 +3,7 @@ from threading import Timer
 
 import telebot
 
-from config import TELEGRAM_TOKEN, ADMIN_IDS, TRAINING_CHAT_ID_TEST, CONFIG_ADMINS
+from config import ADMIN_IDS, TRAINING_CHAT_ID_TEST, CONFIG_ADMINS, TELEGRAM_TOKEN
 from gsheets import GoogleSheetsClient
 from templates_manager import TemplatesManager
 
@@ -82,26 +82,119 @@ def edit_template(message):
     except Exception as e:
         bot.reply_to(message, f"❌ Ошибка: {str(e)}")
 
+
 @bot.message_handler(commands=['deletetemplate'])
 def delete_template(message):
     if not is_admin(message.from_user.id):
         bot.reply_to(message, "⛔ Недостаточно прав!")
         return
 
-    try:
-        name = message.text.split(' ', 1)[1].strip()
-        if templates_manager.delete_template(name):
-            bot.reply_to(message, f"✅ Шаблон '{name}' удалён!")
-        else:
-            bot.reply_to(message, f"❌ Не удалось удалить шаблон '{name}'")
-    except Exception as e:
-        bot.reply_to(message, f"❌ Ошибка: {str(e)}")
+    templates = templates_manager.list_templates()
+
+    # Убираем default из списка для удаления
+    templates = [t for t in templates if t.lower() != 'default']
+
+    if not templates:
+        bot.reply_to(message, "❌ Нет шаблонов для удаления (кроме базового).")
+        return
+
+    # Создаем инлайн-клавиатуру с шаблонами
+    markup = types.InlineKeyboardMarkup()
+    for template in templates:
+        markup.add(types.InlineKeyboardButton(
+            text=template,
+            callback_data=f"delete_template_{template}"
+        ))
+
+    bot.reply_to(
+        message,
+        "📋 Выберите шаблон для удаления:",
+        reply_markup=markup
+    )
+
+
+# Обработчик кнопок удаления шаблонов
+@bot.callback_query_handler(func=lambda call: call.data.startswith('delete_template_'))
+def confirm_delete_template(call):
+    template_name = call.data.replace('delete_template_', '')
+
+    # Создаем клавиатуру подтверждения
+    markup = types.InlineKeyboardMarkup()
+    markup.row(
+        types.InlineKeyboardButton("✅ Да", callback_data=f"confirm_delete_{template_name}"),
+        types.InlineKeyboardButton("❌ Нет", callback_data="cancel_delete")
+    )
+
+    bot.edit_message_text(
+        chat_id=call.message.chat.id,
+        message_id=call.message.message_id,
+        text=f"Вы уверены, что хотите удалить шаблон '{template_name}'?",
+        reply_markup=markup
+    )
+    bot.answer_callback_query(call.id)
+
+
+# Обработчик подтверждения удаления
+@bot.callback_query_handler(func=lambda call: call.data.startswith('confirm_delete_'))
+def execute_delete_template(call):
+    template_name = call.data.replace('confirm_delete_', '')
+
+    if templates_manager.delete_template(template_name):
+        bot.edit_message_text(
+            chat_id=call.message.chat.id,
+            message_id=call.message.message_id,
+            text=f"✅ Шаблон '{template_name}' успешно удалён!"
+        )
+    else:
+        bot.edit_message_text(
+            chat_id=call.message.chat.id,
+            message_id=call.message.message_id,
+            text=f"❌ Не удалось удалить шаблон '{template_name}'"
+        )
+    bot.answer_callback_query(call.id)
+
+
+# Обработчик отмены удаления
+@bot.callback_query_handler(func=lambda call: call.data == "cancel_delete")
+def cancel_delete_template(call):
+    bot.edit_message_text(
+        chat_id=call.message.chat.id,
+        message_id=call.message.message_id,
+        text="❌ Удаление отменено"
+    )
+    bot.answer_callback_query(call.id)
+
 
 @bot.message_handler(commands=['listtemplates'])
 def list_templates(message):
     templates = templates_manager.list_templates()
-    response = "📋 Доступные шаблоны:\n\n" + "\n".join(f"• {name}" for name in templates)
-    bot.reply_to(message, response)
+
+    if not templates:
+        bot.reply_to(message, "❌ Нет доступных шаблонов.")
+        return
+
+    # Создаем инлайн-клавиатуру с шаблонами
+    markup = types.InlineKeyboardMarkup()
+    for template in templates:
+        markup.add(types.InlineKeyboardButton(text=template, callback_data=f"show_template_{template}"))
+
+    bot.reply_to(message, "📋 Доступные шаблоны:", reply_markup=markup)
+
+
+# Обработчик для кнопок просмотра шаблонов
+@bot.callback_query_handler(func=lambda call: call.data.startswith('show_template_'))
+def show_template(call):
+    template_name = call.data.replace('show_template_', '')
+    try:
+        template_content = templates_manager.get_template(template_name)
+        bot.send_message(
+            call.message.chat.id,
+            f"📝 Шаблон: <b>{template_name}</b>\n\n{template_content}",
+            parse_mode='HTML'
+        )
+        bot.answer_callback_query(call.id)
+    except Exception as e:
+        bot.answer_callback_query(call.id, f"❌ Ошибка: {str(e)}", show_alert=True)
 
 
 from telebot import types
@@ -784,18 +877,72 @@ def handle_training_button(call):
 @bot.message_handler(commands=['help'])
 def show_help(message):
     help_text = """
-📋 Команды управления шаблонами:
+📌 Основные команды для всех пользователей:
 
-/addtemplate - Добавить шаблон
-/edittemplate - Редактировать шаблон
-/deletetemplate - Удалить шаблон
+🏋️‍♂️ Запись на тренировки
+Нажмите кнопку "Игрок" или "Вратарь" под сообщением о тренировке
 
-📌 Создание тренировки:
-/createtrain [шаблон]
+Для отмены записи нажмите "❌ Отменить запись"
+
+📝 Регистрация в системе
+/register - Зарегистрироваться в системе (требуется один раз)
+
+ℹ Помощь
+/help - Показать список доступных команд
+
+
+
+🔐 Команды для администраторов:
+
+📋 Управление шаблонами тренировок
+/addtemplate - Добавить новый шаблон
+Формат:
+/addtemplate  
+Название шаблона   
+Текст сообщения (дату указывать в формате {date})
 
 Пример:
-/createtrain
-15.12.2025 18:00
+/addtemplate  
+Зимний  
+Объявляется тренировка в ФОК Зимний. Дата тренировки: {date}
+Брать СВЕТЛЫЕ и ТЕМНЫЕ свитера
+
+/edittemplate - Изменить существующий шаблон
+/deletetemplate - Удалить шаблон
+/listtemplates - Показать список доступных шаблонов
+
+🏟 Создание тренировки
+/createtrain - Создать новую тренировку (пошаговый процесс)
+
+❌ Отмена тренировки
+/canceltrain - Отменить тренировку (пошаговый процесс)
+
+👥 Управление администраторами
+/addadmin - Добавить администратора (ответом на сообщение пользователя)
+/removeadmin - Удалить администратора (ответом на сообщение)
+/admin - Проверить свои права
+/users - Просмотреть список зарегистрированных пользователей
+
+🕒 Форматы дат и времени
+Дата тренировки: ДД.ММ.ГГГГ (например: 15.12.2025)
+
+Дата и время: ДД.ММ.ГГГГ ЧЧ:ММ (например: 15.12.2025 18:00)
+
+⚠️ Ограничения
+Отменять можно только будущие тренировки
+
+Администраторы, указанные в конфигурации бота, не могут быть удалены
+
+Нельзя снять права администратора с самого себя
+
+🔄 Логика работы
+При создании тренировки бот использует шаблоны
+
+Игроки могут записываться как в основной состав, так и в резерв (при достижении лимита)
+
+Все изменения синхронизируются с Google Таблицей
+
+Для получения помощи по конкретной команде обратитесь к администратору.
 """
     bot.reply_to(message, help_text)
 

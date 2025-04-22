@@ -1,8 +1,9 @@
-import gspread
-from gspread import worksheet
-from oauth2client.service_account import ServiceAccountCredentials
 from datetime import datetime
-from config import GOOGLE_SHEETS_CREDENTIALS_FILE, SPREADSHEET_ID, WORKSHEET_NAME, ADMIN_IDS, ATTENDANCE_SHEET_NAME
+
+import gspread
+from oauth2client.service_account import ServiceAccountCredentials
+
+from config import GOOGLE_SHEETS_CREDENTIALS_FILE, SPREADSHEET_ID, WORKSHEET_NAME, ATTENDANCE_SHEET_NAME
 
 
 class GoogleSheetsClient:
