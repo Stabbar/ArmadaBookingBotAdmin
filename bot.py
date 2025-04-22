@@ -13,8 +13,10 @@ TRAINING_CHAT_ID = TRAINING_CHAT_ID_TEST
 #TRAINING_CHAT_ID = TRAINING_CHAT_ID_STAGING
 gsheets = GoogleSheetsClient()
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
-
 templates_manager = TemplatesManager()
+
+# Глобальная переменная для хранения состояния ожидания даты
+waiting_for_date = {}
 
 # Глобальный словарь для хранения состояния создания тренировки
 training_states = {}
@@ -168,6 +170,24 @@ def process_template_selection(message):
 
     bot.register_next_step_handler(msg, process_date_input)
 
+def process_player_limit(message):
+    try:
+        try:
+            player_limit = int(message.text)
+            if player_limit < 0:
+                raise ValueError
+        except ValueError:
+            bot.reply_to(message, "❌ Некорректное число. Используйте целое число ≥ 0")
+            return
+
+        # Сохраняем лимит в состоянии
+        training_states[message.from_user.id]['player_limit'] = player_limit
+
+        # Продолжаем создание тренировки
+        finalize_training_creation(message)
+
+    except Exception as e:
+        bot.reply_to(message, f"❌ Ошибка: {str(e)}")
 
 def process_date_input(message):
     user_id = message.from_user.id
@@ -194,6 +214,15 @@ def process_date_input(message):
             details="[детали из шаблона]"
         ).replace("[дата будет здесь]", training_states[user_id]['date'])
 
+        msg = bot.reply_to(message, "Введите максимальное количество игроков (число или 0 без лимита):")
+        bot.register_next_step_handler(msg, process_player_limit)
+
+    except ValueError as e:
+        bot.reply_to(message, f"❌ Неверный формат даты: {str(e)}\nПопробуйте снова:")
+        bot.register_next_step_handler(message, process_date_input)
+    except Exception as e:
+        bot.reply_to(message, f"❌ Ошибка лимитов: {str(e)}")
+
         # Создаем клавиатуру подтверждения
         markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
         markup.add(types.KeyboardButton("✅ Создать"), types.KeyboardButton("❌ Отмена"))
@@ -206,9 +235,6 @@ def process_date_input(message):
             reply_markup=markup
         )
 
-    except ValueError as e:
-        bot.reply_to(message, f"❌ Неверный формат даты: {str(e)}\nПопробуйте снова:")
-        bot.register_next_step_handler(message, process_date_input)
     except Exception as e:
         bot.reply_to(message, f"❌ Ошибка: {str(e)}")
         del training_states[user_id]
@@ -224,7 +250,7 @@ def finalize_training_creation(message):
             date=state['date'],
             location="[место из шаблона]",
             details="[детали из шаблона]"
-        ) + "\n\nСписок красавчиков:\nИгроки:\nВратари:"
+        ) + "\n\nСписок красавчиков:\nИгроки:\nВратари:\nРезерв:"
 
         markup = types.InlineKeyboardMarkup()
         markup.row(
@@ -435,18 +461,28 @@ def is_training_message(msg, training_date):
             any(word in msg.text.lower() for word in ["список", "игроки", "вратари"]))
 
 
+
 @bot.message_handler(commands=['canceltrain'])
-def cancel_training(message):
+def start_cancel_training(message):
     if not is_admin(message.from_user.id):
         bot.reply_to(message, "⛔ Недостаточно прав!")
         return
 
-    try:
-        args = message.text.split()
-        if len(args) < 2:
-            raise ValueError("Укажите дату тренировки в формате ДД.ММ.ГГГГ")
+    # Запрашиваем дату у администратора
+    msg = bot.reply_to(message, "📅 Введите дату тренировки для отмены в формате ДД.ММ.ГГГГ:")
 
-        date_str = args[1]
+    # Регистрируем следующий шаг для этого пользователя
+    bot.register_next_step_handler(msg, process_cancel_date)
+
+
+def process_cancel_date(message):
+    try:
+        user_id = message.from_user.id
+        if not is_admin(user_id):
+            bot.reply_to(message, "⛔ Недостаточно прав!")
+            return
+
+        date_str = message.text.strip()
         training_date = datetime.strptime(date_str, '%d.%m.%Y').date()
         current_date = datetime.now().date()
 
@@ -467,7 +503,7 @@ def cancel_training(message):
 
         # 2. Удаляем данные из таблицы
         if gsheets.cancel_training(training_date):
-            result_msg = f"✅ Тренировка на {date_str} отменена!"
+            result_msg = f"⛔️ Тренировка на {date_str} отменена!"
             if success_count < len(messages_to_delete):
                 result_msg += f"\n(Удалено {success_count} из {len(messages_to_delete)} сообщений)"
             bot.reply_to(message, result_msg)
@@ -475,7 +511,10 @@ def cancel_training(message):
             bot.reply_to(message, "❌ Не удалось отменить тренировку в таблице")
 
     except ValueError as e:
-        bot.reply_to(message, f"❌ Ошибка формата даты: {e}\nИспользуйте /canceltrain ДД.ММ.ГГГГ")
+        bot.reply_to(message, f"❌ Ошибка формата даты: {e}\nПожалуйста, введите дату в формате ДД.ММ.ГГГГ")
+        # Повторно запрашиваем дату при ошибке
+        msg = bot.reply_to(message, "📅 Введите дату тренировки для отмены в формате ДД.ММ.ГГГГ:")
+        bot.register_next_step_handler(msg, process_cancel_date)
     except Exception as e:
         bot.reply_to(message, f"❌ Ошибка: {str(e)}")
 
@@ -621,13 +660,23 @@ def handle_training_button(call):
         # Разбираем текущее сообщение
         lines = call.message.text.split('\n')
         players = []
+        reserves = []
         goalies = []
         other_lines = []
         current_section = None
+        player_limit = 0
 
         for line in lines:
-            if "Игроки:" in line:
+            if "Лимит игроков:" in line:
+                try:
+                    player_limit = int(line.split(":")[1].strip())
+                except:
+                    player_limit = 0
+            elif "Игроки:" in line:
                 current_section = "players"
+                other_lines.append(line)
+            elif "Резерв:" in line:
+                current_section = "reserves"
                 other_lines.append(line)
             elif "Вратари:" in line:
                 current_section = "goalies"
@@ -635,28 +684,37 @@ def handle_training_button(call):
             elif line.strip().startswith(('1.', '2.', '3.', '4.', '5.', '6.', '7.', '8.', '9.')):
                 if current_section == "players":
                     players.append(line)
+                elif current_section == "reserves":
+                    reserves.append(line)
                 elif current_section == "goalies":
                     goalies.append(line)
             else:
                 other_lines.append(line)
 
-        # Проверяем дублирование
-        all_participants = []
-        for line in lines:
-            if line.strip().startswith(('1.', '2.', '3.', '4.', '5.', '6.', '7.', '8.', '9.')):
-                all_participants.append(line)
-
+        # Проверяем дублирование во всех списках
+        all_participants = players + reserves + goalies
         if any(user_message in p for p in all_participants):
             bot.answer_callback_query(call.id, f"⚠ Вы уже записаны на тренировку!")
             return
 
-        # Добавляем участника в нужный список
+        # Обработка записи в зависимости от роли
         if role == "Игрок":
-            new_number = len(players) + 1
-            players.append(f"{new_number}. {user_message}")
+            # Проверяем лимит для игроков
+            if player_limit > 0 and len(players) >= player_limit:
+                # Записываем в резерв
+                new_number = len(reserves) + 1
+                reserves.append(f"{new_number}. {user_message} (резерв)")
+                response_text = "✅ Вы записаны в резерв!"
+            else:
+                # Записываем в основной состав
+                new_number = len(players) + 1
+                players.append(f"{new_number}. {user_message}")
+                response_text = "✅ Вы записаны как игрок!"
         else:
+            # Для вратарей лимитов нет
             new_number = len(goalies) + 1
             goalies.append(f"{new_number}. {user_message}")
+            response_text = "✅ Вы записаны как вратарь!"
 
         # Формируем новое сообщение
         new_text = []
@@ -664,6 +722,9 @@ def handle_training_button(call):
             if line == "Игроки:":
                 new_text.append(line)
                 new_text.extend(players)
+            elif line == "Резерв:":
+                new_text.append(line)
+                new_text.extend(reserves)
             elif line == "Вратари:":
                 new_text.append(line)
                 new_text.extend(goalies)
@@ -686,10 +747,10 @@ def handle_training_button(call):
                 break
 
         # Обновляем посещаемость
-        role = 'player' if call.data == 'train_role_player' else 'goalie'
+        role_for_sheet = 'player' if call.data == 'train_role_player' else 'goalie'
         gsheets.update_attendance(call.from_user.id, training_date, present=True)
 
-        bot.answer_callback_query(call.id, f"✅ Вы записаны как {role}!")
+        bot.answer_callback_query(call.id, response_text)
 
     except Exception as e:
         print(f"Ошибка: {e}")
