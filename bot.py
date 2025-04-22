@@ -1,11 +1,9 @@
-import re  # Добавляем этот импорт
-from datetime import datetime
+import re
 from threading import Timer
-import time
 
 import telebot
 
-from config import TELEGRAM_TOKEN, ADMIN_IDS, TRAINING_CHAT_ID_TEST
+from config import TELEGRAM_TOKEN, ADMIN_IDS, TRAINING_CHAT_ID_TEST, CONFIG_ADMINS
 from gsheets import GoogleSheetsClient
 from templates_manager import TemplatesManager
 
@@ -26,7 +24,7 @@ training_messages_store = {}
 
 def is_admin(user_id):
     """Проверка прав администратора"""
-    return user_id in ADMIN_IDS or gsheets.is_admin(user_id)
+    return user_id in ADMIN_IDS or CONFIG_ADMINS
 
 @bot.message_handler(commands=['addtemplate'])
 def add_template(message):
@@ -530,20 +528,34 @@ def check_admin(message):
 # Команда для добавления администратора
 @bot.message_handler(commands=['addadmin'])
 def add_admin(message):
-    admin_id = message.from_user.id
-    if not is_admin(admin_id):
+    # Проверяем, является ли отправитель администратором
+    if not is_admin(message.from_user.id):
         bot.reply_to(message, "⛔ Недостаточно прав!")
         return
 
+    # Проверяем, является ли сообщение ответом на другое сообщение
     if not message.reply_to_message:
         bot.reply_to(message, "ℹ Ответьте на сообщение пользователя, которого хотите сделать администратором")
         return
 
     target_user_id = message.reply_to_message.from_user.id
-    if gsheets.add_admin(admin_id, target_user_id):
+
+    # Проверяем, является ли пользователь уже администратором
+    if target_user_id in ADMIN_IDS:
+        bot.reply_to(message,
+                     f"ℹ Пользователь @{message.reply_to_message.from_user.username} уже является администратором")
+        return
+
+    try:
+        # Добавляем пользователя в список администраторов
+        ADMIN_IDS.append(target_user_id)
+
+        # Можно добавить сохранение в файл, если нужно сохранять изменения между перезапусками
+        # save_admin_ids_to_config(ADMIN_IDS)
+
         bot.reply_to(message, f"✅ Пользователь @{message.reply_to_message.from_user.username} теперь администратор!")
-    else:
-        bot.reply_to(message, "❌ Не удалось назначить администратора")
+    except Exception as e:
+        bot.reply_to(message, f"❌ Не удалось назначить администратора: {str(e)}")
 
 
 # Команда для просмотра всех пользователей (только для админов)
@@ -564,34 +576,47 @@ def list_users(message):
         bot.reply_to(message, f"❌ Ошибка: {e}")
 
 
-
 @bot.message_handler(commands=['removeadmin'])
 def remove_admin(message):
+    # Проверяем права текущего пользователя
     admin_id = message.from_user.id
     if not is_admin(admin_id):
         bot.reply_to(message, "⛔ Недостаточно прав!")
         return
 
+    # Проверяем, что команда вызвана как ответ на сообщение
     if not message.reply_to_message:
         bot.reply_to(message, "ℹ Ответьте на сообщение администратора, которого хотите разжаловать")
         return
 
     target_user_id = message.reply_to_message.from_user.id
 
-    # Нельзя удалить себя
+    # Проверяем, что пользователь не пытается снять права с себя
     if target_user_id == admin_id:
         bot.reply_to(message, "❌ Вы не можете снять права с себя!")
         return
 
-    # Нельзя удалить конфигурационных админов
-    if target_user_id in ADMIN_IDS:
+    # Проверяем, что это не конфигурационный админ
+    if target_user_id in CONFIG_ADMINS:  # или if target_user_id in ADMIN_IDS[:N] для первых N админов
         bot.reply_to(message, "❌ Этот администратор указан в конфигурации бота!")
         return
 
-    if gsheets.remove_admin(admin_id, target_user_id):
+    # Проверяем, что пользователь вообще является админом
+    if target_user_id not in ADMIN_IDS:
+        bot.reply_to(message,
+                     f"ℹ Пользователь @{message.reply_to_message.from_user.username} не является администратором")
+        return
+
+    try:
+        # Удаляем пользователя из списка администраторов
+        ADMIN_IDS.remove(target_user_id)
+
         bot.reply_to(message, f"✅ Пользователь @{message.reply_to_message.from_user.username} больше не администратор!")
-    else:
-        bot.reply_to(message, "❌ Не удалось снять права администратора")
+    except ValueError:
+        bot.reply_to(message,
+                     f"ℹ Пользователь @{message.reply_to_message.from_user.username} не найден в списке администраторов")
+    except Exception as e:
+        bot.reply_to(message, f"❌ Не удалось снять права администратора: {str(e)}")
 
 @bot.message_handler(commands=['register'])
 def handle_register(message):

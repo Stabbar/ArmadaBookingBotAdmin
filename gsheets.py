@@ -40,53 +40,6 @@ class GoogleSheetsClient:
         except Exception as e:
             raise Exception(f"Ошибка инициализации таблицы: {str(e)}")
 
-    def is_admin(self, user_id):
-        """Проверяет, является ли пользователь администратором"""
-        if user_id in ADMIN_IDS:
-            return True
-
-        try:
-            # Ищем в столбце is_admin (индекс 4)
-            cell = self.worksheet.find(str(user_id), in_column=1)
-            if cell:
-                is_admin = self.worksheet.cell(cell.row, 6).value
-                return is_admin == 'TRUE'
-        except:
-            return False
-        return False
-
-    def add_admin(self, admin_id, target_user_id):
-        """Добавляет администратора"""
-        if not self.is_admin(admin_id):
-            return False
-
-        try:
-            cell = self.worksheet.find(str(target_user_id), in_column=1)
-            if cell:
-                self.worksheet.update_cell(cell.row, 6, 'TRUE')
-                return True
-        except:
-            return False
-        return False
-
-    def remove_admin(self, admin_id, target_user_id):
-        """Удаляет права администратора"""
-        if not self.is_admin(admin_id):
-            return False
-
-        try:
-            cell = self.worksheet.find(str(target_user_id), in_column=1)
-            if cell:
-                # Проверяем, что это не конфигурационный админ
-                if target_user_id in ADMIN_IDS:
-                    return False
-
-                self.worksheet.update_cell(cell.row, 6, 'FALSE')
-                return True
-        except:
-            return False
-        return False
-
     def _update_headers(self, new_headers):
         """Обновление заголовков таблицы"""
         header_range = f"A1:{chr(65 + len(new_headers) - 1)}1"
