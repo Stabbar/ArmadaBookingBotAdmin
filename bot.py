@@ -1,8 +1,13 @@
-import telebot
-from gsheets import GoogleSheetsClient
-from config import TELEGRAM_TOKEN, ADMIN_IDS, TRAINING_CHAT_ID_TEST, TRAINING_CHAT_ID_STAGING
-from templates_manager import TemplatesManager
+import re  # Добавляем этот импорт
+from datetime import datetime
+from threading import Timer
+import time
 
+import telebot
+
+from config import TELEGRAM_TOKEN, ADMIN_IDS, TRAINING_CHAT_ID_TEST
+from gsheets import GoogleSheetsClient
+from templates_manager import TemplatesManager
 
 TRAINING_CHAT_ID = TRAINING_CHAT_ID_TEST
 #TRAINING_CHAT_ID = TRAINING_CHAT_ID_STAGING
@@ -13,6 +18,9 @@ templates_manager = TemplatesManager()
 
 # Глобальный словарь для хранения состояния создания тренировки
 training_states = {}
+
+# Глобальное хранилище сообщений о тренировках
+training_messages_store = {}
 
 def is_admin(user_id):
     """Проверка прав администратора"""
@@ -226,11 +234,12 @@ def finalize_training_creation(message):
         markup.row(
             types.InlineKeyboardButton("❌ Отменить запись", callback_data='train_cancel')
         )
-        bot.send_message(
+        sent_message = bot.send_message(
             chat_id=TRAINING_CHAT_ID,
             text=train_text,
             reply_markup=markup
         )
+        store_training_message(sent_message)
 
         bot.send_message(
             message.chat.id,
@@ -238,12 +247,17 @@ def finalize_training_creation(message):
             reply_markup=types.ReplyKeyboardRemove()
         )
 
+
     except Exception as e:
         bot.reply_to(message, f"❌ Ошибка: {str(e)}")
     finally:
         if message.from_user.id in training_states:
             del training_states[message.from_user.id]
 
+@bot.message_handler(func=lambda m: m.chat.id == TRAINING_CHAT_ID and "тренировка" in m.text.lower())
+def handle_training_message(message):
+    """Перехватывает все сообщения о тренировках и сохраняет их"""
+    store_training_message(message)
 
 @bot.callback_query_handler(func=lambda call: call.data == 'train_cancel')
 def handle_cancel_registration(call):
@@ -344,6 +358,127 @@ def handle_cancel_registration(call):
         print(f"Ошибка: {e}")
         bot.answer_callback_query(call.id, "❌ Ошибка сервера")
 
+
+def store_training_message(message):
+    """Сохраняет сообщение о тренировке для быстрого доступа"""
+    try:
+        # Парсим дату из сообщения с помощью регулярного выражения
+        date_match = re.search(r'(\d{2}\.\d{2}\.\d{4})', message.text)
+        if not date_match:
+            return
+
+        date_str = date_match.group(1)
+        if date_str not in training_messages_store:
+            training_messages_store[date_str] = []
+
+        training_messages_store[date_str].append({
+            'chat_id': message.chat.id,
+            'message_id': message.message_id,
+            'text': message.text
+        })
+    except Exception as e:
+        print(f"Ошибка сохранения сообщения: {e}")
+
+
+def find_training_message(chat_id, training_date):
+    """Ищет сообщение о тренировке по дате в истории чата"""
+    try:
+        # Формируем строку для поиска (дата в формате сообщения)
+        search_date = training_date.strftime('%d.%m.%Y')
+
+        # Получаем последние 100 сообщений (можно увеличить при необходимости)
+        messages = bot.get_chat_history(chat_id, limit=100)
+
+        for msg in messages:
+            if msg.text and search_date in msg.text and "тренировка" in msg.text.lower():
+                return {
+                    'chat_id': chat_id,
+                    'message_id': msg.message_id,
+                    'text': msg.text
+                }
+        return None
+    except Exception as e:
+        print(f"Ошибка поиска сообщения: {e}")
+        return None
+
+
+def find_all_training_messages(chat_id, training_date):
+    """Находит все сообщения о тренировке (основное и возможно дополнения)"""
+    try:
+        search_date = training_date.strftime('%d.%m.%Y')
+        messages = bot.get_chat_history(chat_id, limit=200)  # Увеличиваем лимит
+        result = []
+
+        for msg in messages:
+            if msg.text and search_date in msg.text and "тренировка" in msg.text.lower():
+                result.append({
+                    'chat_id': chat_id,
+                    'message_id': msg.message_id,
+                    'text': msg.text
+                })
+        return result
+    except Exception as e:
+        print(f"Ошибка поиска сообщений: {e}")
+        return []
+
+
+def is_training_message(msg, training_date):
+    """Проверяет что сообщение соответствует тренировке на указанную дату"""
+    if not msg.text:
+        return False
+
+    date_str = training_date.strftime('%d.%m.%Y')
+
+    # Проверяем что это сообщение о тренировке и содержит нужную дату
+    return ("тренировка" in msg.text.lower() and
+            date_str in msg.text and
+            any(word in msg.text.lower() for word in ["список", "игроки", "вратари"]))
+
+
+@bot.message_handler(commands=['canceltrain'])
+def cancel_training(message):
+    if not is_admin(message.from_user.id):
+        bot.reply_to(message, "⛔ Недостаточно прав!")
+        return
+
+    try:
+        args = message.text.split()
+        if len(args) < 2:
+            raise ValueError("Укажите дату тренировки в формате ДД.ММ.ГГГГ")
+
+        date_str = args[1]
+        training_date = datetime.strptime(date_str, '%d.%m.%Y').date()
+        current_date = datetime.now().date()
+
+        if training_date <= current_date:
+            bot.reply_to(message, "❌ Можно отменять только будущие тренировки!")
+            return
+
+        # 1. Удаляем сообщения из хранилища
+        messages_to_delete = training_messages_store.get(date_str, [])
+        success_count = 0
+
+        for msg_data in messages_to_delete:
+            try:
+                bot.delete_message(msg_data['chat_id'], msg_data['message_id'])
+                success_count += 1
+            except Exception as e:
+                print(f"Не удалось удалить сообщение {msg_data['message_id']}: {e}")
+
+        # 2. Удаляем данные из таблицы
+        if gsheets.cancel_training(training_date):
+            result_msg = f"✅ Тренировка на {date_str} отменена!"
+            if success_count < len(messages_to_delete):
+                result_msg += f"\n(Удалено {success_count} из {len(messages_to_delete)} сообщений)"
+            bot.reply_to(message, result_msg)
+        else:
+            bot.reply_to(message, "❌ Не удалось отменить тренировку в таблице")
+
+    except ValueError as e:
+        bot.reply_to(message, f"❌ Ошибка формата даты: {e}\nИспользуйте /canceltrain ДД.ММ.ГГГГ")
+    except Exception as e:
+        bot.reply_to(message, f"❌ Ошибка: {str(e)}")
+
 # Команда для проверки прав
 @bot.message_handler(commands=['admin'])
 def check_admin(message):
@@ -388,6 +523,7 @@ def list_users(message):
         bot.reply_to(message, response)
     except Exception as e:
         bot.reply_to(message, f"❌ Ошибка: {e}")
+
 
 
 @bot.message_handler(commands=['removeadmin'])
@@ -576,6 +712,33 @@ def show_help(message):
 15.12.2025 18:00
 """
     bot.reply_to(message, help_text)
+
+
+
+def cleanup_messages_store():
+    """Очищает хранилище от старых сообщений"""
+    global training_messages_store
+
+    current_date = datetime.now().date()
+    old_dates = []
+
+    for date_str in training_messages_store:
+        try:
+            msg_date = datetime.strptime(date_str, '%d.%m.%Y').date()
+            if msg_date < current_date:
+                old_dates.append(date_str)
+        except:
+            continue
+
+    for date_str in old_dates:
+        del training_messages_store[date_str]
+
+    # Повторяем каждые 24 часа
+    Timer(86400, cleanup_messages_store).start()
+
+
+# Запускаем очистку при старте
+cleanup_messages_store()
 
 if __name__ == '__main__':
     print("Бот запущен. Ожидание команд")

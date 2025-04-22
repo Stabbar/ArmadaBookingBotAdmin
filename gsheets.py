@@ -215,3 +215,53 @@ class GoogleSheetsClient:
         except Exception as e:
             print(f"Ошибка обновления посещаемости: {e}")
             return False
+
+#TODO: Подсчет тренировок слетает при отмене. Минорно, но потом надо будет поправить
+    def cancel_training(self, training_date):
+        """Удаляет данные о тренировке из таблицы"""
+        try:
+            worksheet = self.get_attendance_sheet()
+            headers = worksheet.row_values(1)
+            date_str = training_date.strftime('%d.%m.%Y')
+
+            if date_str not in headers:
+                return False  # Нет такой тренировки
+
+            # Находим индекс столбца
+            col_idx = headers.index(date_str) + 1  # +1 т.к. индексы с 1
+
+            # Удаляем столбец со сдвигом влево
+            worksheet.delete_columns(col_idx)
+
+            # Обновляем "Всего" для всех пользователей
+            self.recalculate_totals(worksheet)
+
+            return True
+
+        except Exception as e:
+            print(f"Ошибка отмены тренировки: {e}")
+            return False
+
+
+    def recalculate_totals(self, worksheet):
+        """Пересчитывает графу 'Всего'"""
+        try:
+            records = worksheet.get_all_records()
+            headers = worksheet.row_values(1)
+
+            if 'Всего' not in headers:
+                return
+
+            total_col = headers.index('Всего') + 1
+            all_values = worksheet.get_all_values()
+
+            for i, row in enumerate(all_values[1:], start=2):  # Пропускаем заголовок
+                if not row:
+                    continue
+
+                # Считаем отметки посещения (✅)
+                visits = sum(1 for val in row[1:total_col - 1] if val == '✅')
+                worksheet.update_cell(i, total_col, visits)
+
+        except Exception as e:
+            print(f"Ошибка пересчета итогов: {e}")
