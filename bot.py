@@ -1,8 +1,11 @@
 import telebot
 from gsheets import GoogleSheetsClient
-from config import TELEGRAM_TOKEN, ADMIN_IDS, TRAINING_CHAT_ID
+from config import TELEGRAM_TOKEN, ADMIN_IDS, TRAINING_CHAT_ID_TEST, TRAINING_CHAT_ID_STAGING
 from templates_manager import TemplatesManager
 
+
+TRAINING_CHAT_ID = TRAINING_CHAT_ID_TEST
+#TRAINING_CHAT_ID = TRAINING_CHAT_ID_STAGING
 gsheets = GoogleSheetsClient()
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
 
