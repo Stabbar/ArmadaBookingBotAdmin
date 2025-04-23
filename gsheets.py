@@ -118,8 +118,8 @@ class GoogleSheetsClient:
             print(f"Ошибка доступа к таблице посещений: {e}")
             raise
 
-    def update_attendance(self, user_id, training_date, present=True):
-        """Обновляет график посещений"""
+    def update_attendance(self, user_id, training_date, present=True, role=None):
+        """Обновляет график посещений с учетом роли (player/goalie)"""
         try:
             # Открываем таблицу посещений
             worksheet = self.get_attendance_sheet()
@@ -152,18 +152,37 @@ class GoogleSheetsClient:
                 worksheet.append_row(new_row)
                 user_row = len(worksheet.get_all_values())
 
-            # Обновляем ячейку
+            # Обновляем ячейку с учетом роли
             col_idx = headers.index(date_str) + 1
-            worksheet.update_cell(user_row, col_idx, '1' if present else '')
+            current_value = worksheet.cell(user_row, col_idx).value
 
-            # Обновляем "Всего"
+            # Формируем новое значение
+            if not present:
+                new_value = ''
+            elif role == 'goalie':
+                new_value = 'G'  # Отметка для вратарей
+            else:
+                new_value = '1'  # Обычное посещение
+
+            # Обновляем только если:
+            # - Нет текущей записи и нужно поставить посещение
+            # - Или нужно убрать посещение
+            if (not current_value and present) or (current_value and not present):
+                worksheet.update_cell(user_row, col_idx, new_value)
+
+            # Обновляем "Всего" и "Вратари"
             total_col = len(headers)
             if "Всего" not in headers[-1]:
                 worksheet.update_cell(1, total_col, "Всего")
+                worksheet.update_cell(1, total_col + 1, "Вратари")
 
-            # Считаем общее количество посещений
-            visits = sum(1 for val in worksheet.row_values(user_row)[1:-1] if val == '1')
-            worksheet.update_cell(user_row, total_col, visits)
+            # Считаем статистику
+            row_values = worksheet.row_values(user_row)
+            total_visits = sum(1 for val in row_values[1:-2] if val == '1')
+            goalie_visits = sum(1 for val in row_values[1:-2] if val == 'G')
+
+            worksheet.update_cell(user_row, total_col, total_visits)
+            worksheet.update_cell(user_row, total_col + 1, goalie_visits)
 
             return True
 

@@ -12,7 +12,7 @@
 
 
 
-Получегие кредов Google Sheets API:
+Получение кредов Google Sheets API:
 - Перейдите в Google Cloud Console
 - Создайте новый проект
 - Включите Google Sheets API и Google Drive API

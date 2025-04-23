@@ -262,6 +262,7 @@ def process_template_selection(message):
 
     bot.register_next_step_handler(msg, process_date_input)
 
+
 def process_player_limit(message):
     try:
         try:
@@ -275,11 +276,36 @@ def process_player_limit(message):
         # Сохраняем лимит в состоянии
         training_states[message.from_user.id]['player_limit'] = player_limit
 
-        # Продолжаем создание тренировки
-        finalize_training_creation(message)
+        # Получаем шаблон
+        template = templates_manager.get_template(training_states[message.from_user.id]['template_name'])
+
+        # Формируем текст сообщения с лимитом
+        train_text = template.format(
+            date=training_states[message.from_user.id]['date'],
+            location="[место из шаблона]",
+            details="[детали из шаблона]"
+        ) + f"\n\nЛимит игроков: {player_limit}\n\nСписок красавчиков:\nИгроки:\nВратари:\nРезерв:"
+
+        # Создаем клавиатуру подтверждения
+        markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
+        markup.add(types.KeyboardButton("✅ Создать"), types.KeyboardButton("❌ Отмена"))
+
+        # Показываем превью
+        bot.send_message(
+            message.chat.id,
+            f"📝 Превью сообщения:\n\n{train_text}\n\n"
+            "Подтвердите создание тренировки:",
+            reply_markup=markup
+        )
+
+        # Обновляем состояние
+        training_states[message.from_user.id]['step'] = 'confirm_creation'
+        training_states[message.from_user.id]['train_text'] = train_text
 
     except Exception as e:
         bot.reply_to(message, f"❌ Ошибка: {str(e)}")
+        del training_states[message.from_user.id]
+
 
 def process_date_input(message):
     user_id = message.from_user.id
@@ -335,14 +361,16 @@ def process_date_input(message):
 @bot.message_handler(func=lambda m: training_states.get(m.from_user.id, {}).get('step') == 'confirm_creation')
 def finalize_training_creation(message):
     try:
-        state = training_states[message.from_user.id]
-        template = templates_manager.get_template(state['template_name'])
+        if message.text == "❌ Отмена":
+            bot.send_message(
+                message.chat.id,
+                "❌ Создание тренировки отменено",
+                reply_markup=types.ReplyKeyboardRemove()
+            )
+            del training_states[message.from_user.id]
+            return
 
-        train_text = template.format(
-            date=state['date'],
-            location="[место из шаблона]",
-            details="[детали из шаблона]"
-        ) + "\n\nСписок красавчиков:\nИгроки:\nВратари:"
+        state = training_states[message.from_user.id]
 
         markup = types.InlineKeyboardMarkup()
         markup.row(
@@ -352,9 +380,10 @@ def finalize_training_creation(message):
         markup.row(
             types.InlineKeyboardButton("❌ Отменить запись", callback_data='train_cancel')
         )
+
         sent_message = bot.send_message(
             chat_id=TRAINING_CHAT_ID,
-            text=train_text,
+            text=state['train_text'],
             reply_markup=markup
         )
         store_training_message(sent_message)
@@ -364,7 +393,6 @@ def finalize_training_creation(message):
             f"✅ Тренировка создана по шаблону '{state['template_name']}'!",
             reply_markup=types.ReplyKeyboardRemove()
         )
-
 
     except Exception as e:
         bot.reply_to(message, f"❌ Ошибка: {str(e)}")
@@ -398,31 +426,55 @@ def handle_cancel_registration(call):
         # Разбираем текущее сообщение
         lines = call.message.text.split('\n')
         players = []
+        reserves = []
         goalies = []
         other_lines = []
         current_section = None
-        found = False
+        found_in_players = False
+        found_in_reserves = False
+        found_in_goalies = False
+        player_limit = 0
 
+        # Парсим лимит игроков
+        for line in lines:
+            if "Лимит игроков:" in line:
+                try:
+                    player_limit = int(line.split(":")[1].strip())
+                except:
+                    player_limit = 0
+                break
+
+        # Обрабатываем все строки сообщения
         for line in lines:
             if "Игроки:" in line:
                 current_section = "players"
+                other_lines.append(line)
+            elif "Резерв:" in line:
+                current_section = "reserves"
                 other_lines.append(line)
             elif "Вратари:" in line:
                 current_section = "goalies"
                 other_lines.append(line)
             elif line.strip().startswith(('1.', '2.', '3.', '4.', '5.', '6.', '7.', '8.', '9.')):
                 if user_message in line:
-                    found = True
+                    if current_section == "players":
+                        found_in_players = True
+                    elif current_section == "reserves":
+                        found_in_reserves = True
+                    elif current_section == "goalies":
+                        found_in_goalies = True
                     continue  # Пропускаем запись пользователя
 
                 if current_section == "players":
                     players.append(line)
+                elif current_section == "reserves":
+                    reserves.append(line)
                 elif current_section == "goalies":
                     goalies.append(line)
             else:
                 other_lines.append(line)
 
-        if not found:
+        if not (found_in_players or found_in_reserves or found_in_goalies):
             bot.answer_callback_query(
                 call.id,
                 "⚠ Вы не были записаны на эту тренировку",
@@ -430,11 +482,23 @@ def handle_cancel_registration(call):
             )
             return
 
+        # Если отменил игрок из основного состава и есть резерв
+        if found_in_players and reserves:
+            # Берем первого из резерва
+            reserve_player = reserves.pop(0)
+            # Добавляем в основной состав
+            players.append(f"{len(players)+1}. {reserve_player.split('.', 1)[1].strip().replace('(резерв)', '')}")
+
         # Пересчитываем нумерацию
         players_renumbered = []
         for i, player in enumerate(players, 1):
             parts = player.split('.', 1)
             players_renumbered.append(f"{i}.{parts[1]}")
+
+        reserves_renumbered = []
+        for i, reserve in enumerate(reserves, 1):
+            parts = reserve.split('.', 1)
+            reserves_renumbered.append(f"{i}.{parts[1]}")
 
         goalies_renumbered = []
         for i, goalie in enumerate(goalies, 1):
@@ -447,6 +511,9 @@ def handle_cancel_registration(call):
             if line == "Игроки:":
                 new_text.append(line)
                 new_text.extend(players_renumbered)
+            elif line == "Резерв:":
+                new_text.append(line)
+                new_text.extend(reserves_renumbered)
             elif line == "Вратари:":
                 new_text.append(line)
                 new_text.extend(goalies_renumbered)
@@ -470,12 +537,24 @@ def handle_cancel_registration(call):
 
         gsheets.update_attendance(call.from_user.id, training_date, present=False)
 
+        # Если был перенос из резерва, обновляем запись этого игрока
+        if found_in_players and reserves_renumbered != reserves:
+            reserve_user_id = get_user_id_from_message(reserve_player)  # Нужно реализовать эту функцию
+            if reserve_user_id:
+                gsheets.update_attendance(reserve_user_id, training_date, present=True, role='player')
+
         bot.answer_callback_query(call.id, "✅ Ваша запись отменена!")
 
     except Exception as e:
         print(f"Ошибка: {e}")
         bot.answer_callback_query(call.id, "❌ Ошибка сервера")
 
+def get_user_id_from_message(message_text):
+    """Извлекает user_id из строки сообщения (нужно реализовать)"""
+    # Здесь должна быть логика извлечения user_id из строки вида "1. Имя Фамилия @username"
+    # Можно искать в базе данных по имени или username
+    # Возвращает user_id или None если не найден
+    return None
 
 def store_training_message(message):
     """Сохраняет сообщение о тренировке для быстрого доступа"""
@@ -600,7 +679,7 @@ def process_cancel_date(message):
                 result_msg += f"\n(Удалено {success_count} из {len(messages_to_delete)} сообщений)"
             bot.reply_to(message, result_msg)
         else:
-            bot.reply_to(message, "❌ Не удалось отменить тренировку в таблице")
+            bot.reply_to(message, "❌ Не удалось отменить тренировку в таблице или на тренировку никто не записался")
 
     except ValueError as e:
         bot.reply_to(message, f"❌ Ошибка формата даты: {e}\nПожалуйста, введите дату в формате ДД.ММ.ГГГГ")
@@ -839,7 +918,7 @@ def save_registration(message, user):
             raise ValueError("Требуется ввести и Фамилию и Имя")
 
         if gsheets.add_record(user, full_name):
-            bot.reply_to(message, f"✅ Данные сохранены:\nID: {user.id}\nИмя: {full_name}")
+            bot.reply_to(message, f"✅ Данные сохранены:\nИмя: {full_name}")
         else:
             bot.reply_to(message, "❌ Ошибка при сохранении!")
 
@@ -884,13 +963,18 @@ def handle_training_button(call):
         current_section = None
         player_limit = 0
 
+        # Парсим лимит игроков
         for line in lines:
             if "Лимит игроков:" in line:
                 try:
                     player_limit = int(line.split(":")[1].strip())
                 except:
                     player_limit = 0
-            elif "Игроки:" in line:
+                break
+
+        # Обрабатываем все строки сообщения
+        for line in lines:
+            if "Игроки:" in line:
                 current_section = "players"
                 other_lines.append(line)
             elif "Резерв:" in line:
@@ -917,8 +1001,7 @@ def handle_training_button(call):
 
         # Обработка записи в зависимости от роли
         if role == "Игрок":
-            # Проверяем лимит для игроков
-            if 0 < player_limit <= len(players):
+            if player_limit > 0 and len(players) >= player_limit:
                 # Записываем в резерв
                 new_number = len(reserves) + 1
                 reserves.append(f"{new_number}. {user_message} (резерв)")
@@ -1000,6 +1083,14 @@ def show_help(message):
 /addtemplate  
 Название шаблона   
 Текст сообщения (дату указывать в формате {date})
+
+Строки в конце сообщения: 
+"Список красавчиков: 
+Игроки: 
+Вратари:
+Резерв:"
+
+Зашиты в код как константа и будут указаны в конце сообщения для любого шаблона. Отдельно добавлять их не нужно
 
 Пример:
 /addtemplate  
