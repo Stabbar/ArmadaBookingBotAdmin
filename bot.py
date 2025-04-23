@@ -1,15 +1,15 @@
-import re
 import os
+import re
 from threading import Timer
 
 import telebot
 
-from config import ADMIN_IDS, TRAINING_CHAT_ID_TEST, CONFIG_ADMINS, TELEGRAM_TOKEN
+from config import ADMIN_IDS, CONFIG_ADMINS, TELEGRAM_TOKEN, TRAINING_CHAT_ID_STAGING
 from gsheets import GoogleSheetsClient
 from templates_manager import TemplatesManager
 
-TRAINING_CHAT_ID = TRAINING_CHAT_ID_TEST
-#TRAINING_CHAT_ID = TRAINING_CHAT_ID_STAGING
+#TRAINING_CHAT_ID = TRAINING_CHAT_ID_TEST
+TRAINING_CHAT_ID = TRAINING_CHAT_ID_STAGING
 gsheets = GoogleSheetsClient()
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
 templates_manager = TemplatesManager()
@@ -340,6 +340,7 @@ def process_date_input(message):
         bot.register_next_step_handler(message, process_date_input)
     except Exception as e:
         bot.reply_to(message, f"❌ Ошибка лимитов: {str(e)}")
+        del training_states[user_id]
 
         # Создаем клавиатуру подтверждения
         markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
@@ -352,10 +353,6 @@ def process_date_input(message):
             "Подтвердите создание тренировки:",
             reply_markup=markup
         )
-
-    except Exception as e:
-        bot.reply_to(message, f"❌ Ошибка: {str(e)}")
-        del training_states[user_id]
 
 
 @bot.message_handler(func=lambda m: training_states.get(m.from_user.id, {}).get('step') == 'confirm_creation')

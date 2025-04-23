@@ -1,5 +1,5 @@
-from datetime import datetime
-
+from datetime import datetime, timedelta
+import functools
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 
@@ -17,6 +17,18 @@ class GoogleSheetsClient:
             GOOGLE_SHEETS_CREDENTIALS_FILE, self.scope)
         self.client = gspread.authorize(self.creds)
         self._init_worksheet()
+        self._user_cache = {}
+        self._last_cache_update = datetime.min
+
+    def clear_cache(self):
+        """Очищает кэш пользователей"""
+        self._user_cache = {}
+        self._last_cache_update = datetime.min
+
+    def _check_cache_expiry(self):
+        """Проверяет истек ли срок действия кэша (5 минут)"""
+        if datetime.now() - self._last_cache_update > timedelta(minutes=1):
+            self.clear_cache()
 
     def _init_worksheet(self):
         """Инициализация листа с новыми полями"""
@@ -81,23 +93,43 @@ class GoogleSheetsClient:
             print(f"Ошибка при добавлении записи: {e}")
             return False
 
+    @functools.lru_cache(maxsize=1000)  # Дополнительное кэширование на уровне функции
     def get_user_record(self, user_id):
-        """Возвращает запись пользователя по ID"""
+        """Возвращает запись пользователя по ID с кэшированием"""
         try:
+            self._check_cache_expiry()
+
+            # Проверяем кэш
+            if str(user_id) in self._user_cache:
+                return self._user_cache[str(user_id)]
+
+            # Если нет в кэше, ищем в таблице
             cell = self.worksheet.find(str(user_id))
             if cell:
-                # Предполагаем структуру:
-                # user_id | telegram_name | full_name | message | ...
-                return {
+                record = {
                     'user_id': self.worksheet.cell(cell.row, 1).value,
                     'telegram_name': self.worksheet.cell(cell.row, 2).value,
                     'full_name': self.worksheet.cell(cell.row, 3).value,
-                    'message': self.worksheet.cell(cell.row, 4).value  # 4-й столбец - message
+                    'message': self.worksheet.cell(cell.row, 4).value
                 }
+
+                # Сохраняем в кэш
+                self._user_cache[str(user_id)] = record
+                self._last_cache_update = datetime.now()
+                return record
+
             return None
         except Exception as e:
             print(f"Ошибка при поиске пользователя: {e}")
             return None
+
+    def invalidate_user_cache(self, user_id=None):
+        """Инвалидирует кэш для конкретного пользователя или полностью"""
+        if user_id is None:
+            self.clear_cache()
+        else:
+            self._user_cache.pop(str(user_id), None)
+            self.get_user_record.cache_clear()  # Очищаем LRU кэш
 
     def get_attendance_sheet(self):
         """Возвращает лист с графиком посещений, создает если не существует"""
