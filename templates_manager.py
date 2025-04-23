@@ -1,4 +1,19 @@
-from config import load_templates, save_templates
+import json
+import os
+
+from config import TEMPLATES_FILE, DEFAULT_TEMPLATES
+
+
+def load_templates():
+    if os.path.exists(TEMPLATES_FILE):
+        with open(TEMPLATES_FILE, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    return DEFAULT_TEMPLATES
+
+
+def save_templates(templates):
+    with open(TEMPLATES_FILE, 'w', encoding='utf-8') as f:
+        json.dump(templates, f, ensure_ascii=False, indent=2)
 
 class TemplatesManager:
     def __init__(self):
