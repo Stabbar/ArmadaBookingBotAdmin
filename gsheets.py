@@ -3,8 +3,9 @@ from datetime import datetime
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 
-from config import GOOGLE_SHEETS_CREDENTIALS_FILE, SPREADSHEET_ID, WORKSHEET_NAME, ATTENDANCE_SHEET_NAME
+from config import SPREADSHEET_ID, WORKSHEET_NAME, ATTENDANCE_SHEET_NAME
 
+GOOGLE_SHEETS_CREDENTIALS_FILE = 'credentials.json'
 
 class GoogleSheetsClient:
     def __init__(self):
