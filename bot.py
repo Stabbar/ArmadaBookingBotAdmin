@@ -1,4 +1,5 @@
 import re
+import os
 from threading import Timer
 
 import telebot
@@ -24,7 +25,7 @@ training_messages_store = {}
 
 def is_admin(user_id):
     """Проверка прав администратора"""
-    return user_id in ADMIN_IDS or CONFIG_ADMINS
+    return user_id in ADMIN_IDS or user_id in CONFIG_ADMINS
 
 @bot.message_handler(commands=['addtemplate'])
 def add_template(message):
@@ -341,7 +342,7 @@ def finalize_training_creation(message):
             date=state['date'],
             location="[место из шаблона]",
             details="[детали из шаблона]"
-        ) + "\n\nСписок красавчиков:\nИгроки:\nВратари:\nРезерв:"
+        ) + "\n\nСписок красавчиков:\nИгроки:\nВратари:"
 
         markup = types.InlineKeyboardMarkup()
         markup.row(
@@ -618,37 +619,92 @@ def check_admin(message):
         bot.reply_to(message, "⛔ У вас нет прав администратора")
 
 
-# Команда для добавления администратора
+def update_admin_ids(new_admin_id):
+    """
+    Обновляет массив ADMIN_IDS в config.py
+    :param new_admin_id: ID нового администратора
+    :return: True если успешно, False если ошибка
+    """
+    try:
+        # Читаем текущий файл config.py
+        with open('config.py', 'r', encoding='utf-8') as f:
+            content = f.read()
+
+        # Находим строку с объявлением ADMIN_IDS
+        pattern = r'ADMIN_IDS\s*=\s*\[([^\]]*)\]'
+        match = re.search(pattern, content)
+
+        if not match:
+            raise ValueError("Не найдено объявление ADMIN_IDS в config.py")
+
+        # Получаем текущие ID
+        current_ids = [int(id_.strip()) for id_ in match.group(1).split(',') if id_.strip()]
+
+        # Проверяем, не добавлен ли уже этот ID
+        if new_admin_id in current_ids:
+            return True  # Уже есть, считаем успехом
+
+        # Добавляем новый ID
+        current_ids.append(new_admin_id)
+
+        # Формируем новую строку
+        new_ids_str = ', '.join(str(id_) for id_ in current_ids)
+        new_content = re.sub(pattern, f'ADMIN_IDS = [{new_ids_str}]', content)
+
+        # Создаем временный файл для безопасной записи
+        temp_file = 'config_temp.py'
+        with open(temp_file, 'w', encoding='utf-8') as f:
+            f.write(new_content)
+
+        # Заменяем оригинальный файл
+        os.replace(temp_file, 'config.py')
+
+        # Обновляем текущий массив ADMIN_IDS
+        global ADMIN_IDS
+        ADMIN_IDS = current_ids
+
+        return True
+
+    except Exception as e:
+        print(f"Ошибка при обновлении ADMIN_IDS: {e}")
+        return False
+
+
 @bot.message_handler(commands=['addadmin'])
-def add_admin(message):
-    # Проверяем, является ли отправитель администратором
+def add_admin_command(message):
+    """Добавление пользователя в администраторы"""
     if not is_admin(message.from_user.id):
         bot.reply_to(message, "⛔ Недостаточно прав!")
         return
 
-    # Проверяем, является ли сообщение ответом на другое сообщение
     if not message.reply_to_message:
         bot.reply_to(message, "ℹ Ответьте на сообщение пользователя, которого хотите сделать администратором")
         return
 
-    target_user_id = message.reply_to_message.from_user.id
+    target_user = message.reply_to_message.from_user
+    target_user_id = target_user.id
 
-    # Проверяем, является ли пользователь уже администратором
+    # Проверки
+    if target_user_id == message.from_user.id:
+        bot.reply_to(message, "❌ Вы уже администратор!")
+        return
+
     if target_user_id in ADMIN_IDS:
-        bot.reply_to(message,
-                     f"ℹ Пользователь @{message.reply_to_message.from_user.username} уже является администратором")
+        bot.reply_to(message, f"ℹ Пользователь @{target_user.username} уже администратор")
+        return
+
+    if target_user_id in CONFIG_ADMINS:
+        bot.reply_to(message, "❌ Этот пользователь является системным администратором")
         return
 
     try:
-        # Добавляем пользователя в список администраторов
-        ADMIN_IDS.append(target_user_id)
+        if update_admin_ids(target_user_id):
+            bot.reply_to(message, f"✅ @{target_user.username} добавлен в администраторы!\n")
+        else:
+            bot.reply_to(message, "❌ Не удалось обновить список администраторов")
 
-        # Можно добавить сохранение в файл, если нужно сохранять изменения между перезапусками
-        # save_admin_ids_to_config(ADMIN_IDS)
-
-        bot.reply_to(message, f"✅ Пользователь @{message.reply_to_message.from_user.username} теперь администратор!")
     except Exception as e:
-        bot.reply_to(message, f"❌ Не удалось назначить администратора: {str(e)}")
+        bot.reply_to(message, f"❌ Ошибка: {str(e)}")
 
 
 # Команда для просмотра всех пользователей (только для админов)
@@ -669,47 +725,91 @@ def list_users(message):
         bot.reply_to(message, f"❌ Ошибка: {e}")
 
 
+def remove_admin_from_config(admin_id):
+    """
+    Удаляет admin_id из массива ADMIN_IDS в config.py
+    :param admin_id: ID администратора для удаления
+    :return: True если успешно, False если ошибка
+    """
+    try:
+        # Читаем текущий файл config.py
+        with open('config.py', 'r', encoding='utf-8') as f:
+            content = f.read()
+
+        # Находим строку с объявлением ADMIN_IDS
+        pattern = r'ADMIN_IDS\s*=\s*\[([^\]]*)\]'
+        match = re.search(pattern, content)
+
+        if not match:
+            raise ValueError("Не найдено объявление ADMIN_IDS в config.py")
+
+        # Получаем текущие ID (исключая удаляемый)
+        current_ids = [int(id_.strip()) for id_ in match.group(1).split(',') if
+                       id_.strip() and int(id_.strip()) != admin_id]
+
+        # Проверяем, был ли этот ID в списке
+        if len(current_ids) == len([int(id_.strip()) for id_ in match.group(1).split(',') if id_.strip()]):
+            return False  # ID не был найден в списке
+
+        # Формируем новую строку
+        new_ids_str = ', '.join(str(id_) for id_ in current_ids)
+        new_content = re.sub(pattern, f'ADMIN_IDS = [{new_ids_str}]', content)
+
+        # Создаем временный файл для безопасной записи
+        temp_file = 'config_temp.py'
+        with open(temp_file, 'w', encoding='utf-8') as f:
+            f.write(new_content)
+
+        # Заменяем оригинальный файл
+        os.replace(temp_file, 'config.py')
+
+        # Обновляем текущий массив ADMIN_IDS
+        global ADMIN_IDS
+        ADMIN_IDS = current_ids
+
+        return True
+
+    except Exception as e:
+        print(f"Ошибка при обновлении ADMIN_IDS: {e}")
+        return False
+
+
 @bot.message_handler(commands=['removeadmin'])
-def remove_admin(message):
-    # Проверяем права текущего пользователя
-    admin_id = message.from_user.id
-    if not is_admin(admin_id):
+def remove_admin_command(message):
+    """Удаление пользователя из администраторов"""
+    if not is_admin(message.from_user.id):
         bot.reply_to(message, "⛔ Недостаточно прав!")
         return
 
-    # Проверяем, что команда вызвана как ответ на сообщение
     if not message.reply_to_message:
         bot.reply_to(message, "ℹ Ответьте на сообщение администратора, которого хотите разжаловать")
         return
 
-    target_user_id = message.reply_to_message.from_user.id
+    target_user = message.reply_to_message.from_user
+    target_user_id = target_user.id
 
-    # Проверяем, что пользователь не пытается снять права с себя
-    if target_user_id == admin_id:
+    # Проверки
+    if target_user_id == message.from_user.id:
         bot.reply_to(message, "❌ Вы не можете снять права с себя!")
         return
 
-    # Проверяем, что это не конфигурационный админ
-    if target_user_id in CONFIG_ADMINS:  # или if target_user_id in ADMIN_IDS[:N] для первых N админов
+    if target_user_id not in ADMIN_IDS:
+        bot.reply_to(message, f"ℹ Пользователь @{target_user.username} не является администратором")
+        return
+
+    if target_user_id in CONFIG_ADMINS:
         bot.reply_to(message, "❌ Этот администратор указан в конфигурации бота!")
         return
 
-    # Проверяем, что пользователь вообще является админом
-    if target_user_id not in ADMIN_IDS:
-        bot.reply_to(message,
-                     f"ℹ Пользователь @{message.reply_to_message.from_user.username} не является администратором")
-        return
-
     try:
-        # Удаляем пользователя из списка администраторов
-        ADMIN_IDS.remove(target_user_id)
+        if remove_admin_from_config(target_user_id):
+            bot.reply_to(message, f"✅ @{target_user.username} больше не администратор!")
+        else:
+            bot.reply_to(message, f"❌ Пользователь @{target_user.username} не найден в списке администраторов")
 
-        bot.reply_to(message, f"✅ Пользователь @{message.reply_to_message.from_user.username} больше не администратор!")
-    except ValueError:
-        bot.reply_to(message,
-                     f"ℹ Пользователь @{message.reply_to_message.from_user.username} не найден в списке администраторов")
     except Exception as e:
-        bot.reply_to(message, f"❌ Не удалось снять права администратора: {str(e)}")
+        bot.reply_to(message, f"❌ Ошибка: {str(e)}")
+
 
 @bot.message_handler(commands=['register'])
 def handle_register(message):
@@ -818,7 +918,7 @@ def handle_training_button(call):
         # Обработка записи в зависимости от роли
         if role == "Игрок":
             # Проверяем лимит для игроков
-            if player_limit > 0 and len(players) >= player_limit:
+            if 0 < player_limit <= len(players):
                 # Записываем в резерв
                 new_number = len(reserves) + 1
                 reserves.append(f"{new_number}. {user_message} (резерв)")
@@ -943,6 +1043,11 @@ def show_help(message):
 Все изменения синхронизируются с Google Таблицей
 
 Для получения помощи по конкретной команде обратитесь к администратору.
+
+Исходники бота:
+https://github.com/Stabbar/ArmadaBookingBotAdmin/tree/master
+
+Конфиг и креды гугл-дока сам соберешь
 """
     bot.reply_to(message, help_text)
 
