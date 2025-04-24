@@ -23,6 +23,9 @@ training_states = {}
 # Глобальное хранилище сообщений о тренировках
 training_messages_store = {}
 
+# Глобальный словарь для хранения ожидающих подтверждений
+pending_reserve_confirmations = {}
+
 def is_admin(user_id):
     """Проверка прав администратора"""
     return user_id in ADMIN_IDS or user_id in CONFIG_ADMINS
@@ -402,25 +405,24 @@ def handle_training_message(message):
     """Перехватывает все сообщения о тренировках и сохраняет их"""
     store_training_message(message)
 
+
 @bot.callback_query_handler(func=lambda call: call.data == 'train_cancel')
 def handle_cancel_registration(call):
-    global training_date, reserve_player
+    global training_date
     try:
+        # 1. Получаем информацию о пользователе
         user = call.from_user
-
-        # Получаем данные из таблицы
         user_data = gsheets.get_user_record(user.id)
+
         if not user_data or not user_data.get('message'):
-            bot.answer_callback_query(
-                call.id,
-                "❌ Ваши данные не найдены",
-                show_alert=True
-            )
+            bot.answer_callback_query(call.id, "❌ Ваши данные не найдены", show_alert=True)
             return
 
         user_message = user_data['message']
+        message_id = call.message.message_id
+        chat_id = call.message.chat.id
 
-        # Разбираем текущее сообщение
+        # 2. Разбираем сообщение о тренировке
         lines = call.message.text.split('\n')
         players = []
         reserves = []
@@ -432,7 +434,7 @@ def handle_cancel_registration(call):
         found_in_goalies = False
         player_limit = 0
 
-        # Парсим лимит игроков
+        # 3. Парсим лимит игроков
         for line in lines:
             if "Лимит игроков:" in line:
                 try:
@@ -441,7 +443,7 @@ def handle_cancel_registration(call):
                     player_limit = 0
                 break
 
-        # Обрабатываем все строки сообщения
+        # 4. Анализируем списки участников
         for line in lines:
             if "Игроки:" in line:
                 current_section = "players"
@@ -460,7 +462,7 @@ def handle_cancel_registration(call):
                         found_in_reserves = True
                     elif current_section == "goalies":
                         found_in_goalies = True
-                    continue  # Пропускаем запись пользователя
+                    continue
 
                 if current_section == "players":
                     players.append(line)
@@ -471,40 +473,191 @@ def handle_cancel_registration(call):
             else:
                 other_lines.append(line)
 
+        # 5. Проверяем, был ли пользователь записан
         if not (found_in_players or found_in_reserves or found_in_goalies):
-            bot.answer_callback_query(
-                call.id,
-                "⚠ Вы не были записаны на эту тренировку",
-                show_alert=True
-            )
+            bot.answer_callback_query(call.id, "⚠ Вы не были записаны на эту тренировку", show_alert=True)
             return
 
-        # Если отменил игрок из основного состава и есть резерв
+        # 6. Получаем дату тренировки
+        for line in call.message.text.split('\n'):
+            if 'тренировка' in line.lower():
+                date_str = line.split('тренировка')[1].strip().split()[0]
+                training_date = datetime.strptime(date_str, '%d.%m.%Y')
+                break
+
+        # 7. Обработка разных сценариев отмены
         if found_in_players and reserves:
-            # Берем первого из резерва
-            reserve_player = reserves.pop(0)
-            # Добавляем в основной состав
-            players.append(f"{len(players)+1}. {reserve_player.split('.', 1)[1].strip().replace('(резерв)', '')}")
+            # Сценарий 1: Отмена основного игрока с резервом
+            training_info = {
+                'original_message_id': message_id,
+                'chat_id': chat_id,
+                'training_date': training_date,
+                'players_list': players,
+                'reserves_list': reserves,
+                'goalies_list': goalies,
+                'other_lines': other_lines,
+                'player_limit': player_limit,
+                'reply_markup': call.message.reply_markup
+            }
+            send_reserve_confirmation(training_info, reserves[0], 0)
+
+            # Пока оставляем списки без изменений (ждем подтверждения)
+            new_text = []
+            for line in other_lines:
+                if line == "Игроки:":
+                    new_text.append(line)
+                    new_text.extend(players)
+                elif line == "Резерв:":
+                    new_text.append(line)
+                    new_text.extend(reserves)
+                elif line == "Вратари:":
+                    new_text.append(line)
+                    new_text.extend(goalies)
+                else:
+                    new_text.append(line)
+        else:
+            # Сценарий 2: Нет резерва или отменяет не основной игрок
+            # Формируем новые списки без этого пользователя
+
+            # Пересчитываем нумерацию
+            players_renumbered = []
+            for i, player in enumerate(players, 1):
+                parts = player.split('.', 1)
+                players_renumbered.append(f"{i}.{parts[1]}")
+
+            reserves_renumbered = []
+            for i, reserve in enumerate(reserves, 1):
+                parts = reserve.split('.', 1)
+                reserves_renumbered.append(f"{i}.{parts[1]}")
+
+            goalies_renumbered = []
+            for i, goalie in enumerate(goalies, 1):
+                parts = goalie.split('.', 1)
+                goalies_renumbered.append(f"{i}.{parts[1]}")
+
+            # Формируем новое сообщение
+            new_text = []
+            for line in other_lines:
+                if line == "Игроки:":
+                    new_text.append(line)
+                    new_text.extend(players_renumbered)
+                elif line == "Резерв:":
+                    new_text.append(line)
+                    new_text.extend(reserves_renumbered)
+                elif line == "Вратари:":
+                    new_text.append(line)
+                    new_text.extend(goalies_renumbered)
+                else:
+                    new_text.append(line)
+
+        # 8. Обновляем сообщение о тренировке
+        bot.edit_message_text(
+            chat_id=chat_id,
+            message_id=message_id,
+            text='\n'.join(new_text),
+            reply_markup=call.message.reply_markup
+        )
+
+        # 9. Обновляем посещаемость
+        gsheets.update_attendance(user.id, training_date, present=False)
+
+        # 10. Уведомляем пользователя
+        bot.answer_callback_query(call.id, "✅ Ваша запись отменена!")
+
+    except Exception as e:
+        print(f"Ошибка: {e}")
+        bot.answer_callback_query(call.id, "❌ Ошибка сервера")
+
+
+def send_reserve_confirmation(training_info, reserve_player, reserve_index):
+    """Отправляет запрос подтверждения резервисту"""
+    try:
+        # Удаляем "(резерв)" из имени игрока перед поиском
+        clean_player_name = reserve_player.split('.', 1)[1].strip().replace('(резерв)', '').strip()
+        reserve_user_id = gsheets.get_user_id_by_name(clean_player_name)
+
+        if not reserve_user_id:
+            print(f"Не найден user_id для резервиста: {clean_player_name}")
+            return
+
+        # Создаем клавиатуру подтверждения
+        markup = types.InlineKeyboardMarkup()
+        confirm_btn = types.InlineKeyboardButton(
+            text="✅ Подтвердить переход",
+            callback_data=f"reserve_confirm_{training_info['original_message_id']}"
+        )
+        markup.add(confirm_btn)
+
+        # Отправляем сообщение
+        sent_msg = bot.send_message(
+            reserve_user_id,
+            f"Вы первый в резерве на тренировку {training_info['training_date'].strftime('%d.%m.%Y')}.\n"
+            "Хотите перейти в основной состав?",
+            reply_markup=markup
+        )
+
+        # Сохраняем информацию о запросе
+        pending_reserve_confirmations[training_info['original_message_id']] = {
+            'training_info': training_info,
+            'reserve_index': reserve_index,
+            'reserve_user_id': reserve_user_id,
+            'reserve_player_name': clean_player_name,  # Сохраняем очищенное имя
+            'confirmation_msg_id': sent_msg.message_id,
+            'timestamp': datetime.now()
+        }
+
+        # Устанавливаем таймер на 1 час
+        Timer(3600, check_reserve_confirmation, [training_info['original_message_id']]).start()
+
+    except Exception as e:
+        print(f"Ошибка отправки подтверждения резервисту: {e}")
+
+
+def check_reserve_confirmation(message_id):
+    """Проверяет подтверждение через 1 час"""
+    if message_id not in pending_reserve_confirmations:
+        return
+
+    confirmation_data = pending_reserve_confirmations[message_id]
+    training_info = confirmation_data['training_info']
+    reserve_index = confirmation_data['reserve_index']
+
+    # Если подтверждения не было, пробуем следующего резервиста
+    if len(training_info['reserves_list']) > reserve_index + 1:
+        send_reserve_confirmation(training_info, training_info['reserves_list'][reserve_index + 1], reserve_index + 1)
+
+    # Удаляем старый запрос
+    pending_reserve_confirmations.pop(message_id, None)
+
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith('reserve_confirm_'))
+def handle_reserve_confirmation(call):
+    try:
+        message_id = int(call.data.split('_')[-1])
+        if message_id not in pending_reserve_confirmations:
+            bot.answer_callback_query(call.id, "❌ Запрос устарел")
+            return
+
+        confirmation_data = pending_reserve_confirmations.pop(message_id)
+        training_info = confirmation_data['training_info']
+        reserve_player = training_info['reserves_list'][confirmation_data['reserve_index']]
+        reserve_user_id = confirmation_data['reserve_user_id']
+
+        # Обновляем списки
+        players = training_info['players_list']
+        reserves = training_info['reserves_list']
+
+        # Удаляем из резерва и добавляем в основной состав
+        reserves.pop(confirmation_data['reserve_index'])
+        players.append(f"{len(players) + 1}. {reserve_player.split('.', 1)[1].strip().replace('(резерв)', '')}")
 
         # Пересчитываем нумерацию
-        players_renumbered = []
-        for i, player in enumerate(players, 1):
-            parts = player.split('.', 1)
-            players_renumbered.append(f"{i}.{parts[1]}")
-
-        reserves_renumbered = []
-        for i, reserve in enumerate(reserves, 1):
-            parts = reserve.split('.', 1)
-            reserves_renumbered.append(f"{i}.{parts[1]}")
-
-        goalies_renumbered = []
-        for i, goalie in enumerate(goalies, 1):
-            parts = goalie.split('.', 1)
-            goalies_renumbered.append(f"{i}.{parts[1]}")
+        players_renumbered = [f"{i}.{p.split('.', 1)[1]}" for i, p in enumerate(players, 1)]
+        reserves_renumbered = [f"{i}.{r.split('.', 1)[1]}" for i, r in enumerate(reserves, 1)]
 
         # Формируем новое сообщение
         new_text = []
-        for line in other_lines:
+        for line in training_info['other_lines']:
             if line == "Игроки:":
                 new_text.append(line)
                 new_text.extend(players_renumbered)
@@ -513,37 +666,35 @@ def handle_cancel_registration(call):
                 new_text.extend(reserves_renumbered)
             elif line == "Вратари:":
                 new_text.append(line)
-                new_text.extend(goalies_renumbered)
+                new_text.extend(training_info['goalies_list'])
             else:
                 new_text.append(line)
 
-        # Обновляем сообщение
+        # Обновляем сообщение о тренировке
         bot.edit_message_text(
-            chat_id=call.message.chat.id,
-            message_id=call.message.message_id,
+            chat_id=training_info['chat_id'],
+            message_id=training_info['original_message_id'],
             text='\n'.join(new_text),
-            reply_markup=call.message.reply_markup
+            reply_markup=training_info['reply_markup']
         )
 
         # Обновляем посещаемость
-        for line in call.message.text.split('\n'):
-            if 'тренировка' in line.lower():
-                date_str = line.split('тренировка')[1].strip().split()[0]
-                training_date = datetime.strptime(date_str, '%d.%m.%Y')
-                break
+        gsheets.update_attendance(
+            reserve_user_id,
+            training_info['training_date'],
+            present=True,
+            role='player'
+        )
 
-        gsheets.update_attendance(call.from_user.id, training_date, present=False)
-
-        # Если был перенос из резерва, обновляем запись этого игрока
-        if found_in_players and reserves_renumbered != reserves:
-            reserve_user_id = gsheets.get_user_id_by_name(reserve_player)
-            if reserve_user_id:
-                gsheets.update_attendance(reserve_user_id, training_date, present=True, role='player')
-
-        bot.answer_callback_query(call.id, "✅ Ваша запись отменена!")
+        # Уведомляем резервиста
+        bot.edit_message_text(
+            chat_id=call.message.chat.id,
+            message_id=call.message.message_id,
+            text="✅ Вы были переведены в основной состав!"
+        )
 
     except Exception as e:
-        print(f"Ошибка: {e}")
+        print(f"Ошибка обработки подтверждения: {e}")
         bot.answer_callback_query(call.id, "❌ Ошибка сервера")
 
 
