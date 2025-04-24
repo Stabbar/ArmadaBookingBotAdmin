@@ -4,7 +4,7 @@ from threading import Timer
 
 import telebot
 
-from config import ADMIN_IDS, CONFIG_ADMINS, TELEGRAM_TOKEN, TRAINING_CHAT_ID_STAGING, TRAINING_CHAT_ID_TEST
+from config import ADMIN_IDS, CONFIG_ADMINS, TELEGRAM_TOKEN, TRAINING_CHAT_ID_STAGING, TRAINING_CHAT_ID_TEST, NOTIFICATION_TO
 from gsheets import GoogleSheetsClient
 from templates_manager import TemplatesManager
 
@@ -564,6 +564,15 @@ def handle_cancel_registration(call):
         # 10. Уведомляем пользователя
         bot.answer_callback_query(call.id, "✅ Ваша запись отменена!")
 
+        player_name = user_data.get('full_name', user_data.get('message', 'Неизвестный игрок'))
+        notification_text = (
+            f"⚠️ Игрок отменил запись на тренировку\n"
+            f"Дата: {training_date.strftime('%d.%m.%Y')}\n"
+            f"Игрок: {player_name}\n"
+            f"Был в: {'основном составе' if found_in_players else 'резерве' if found_in_reserves else 'вратарях'}"
+        )
+        send_admin_notification(notification_text)
+
     except Exception as e:
         print(f"Ошибка: {e}")
         bot.answer_callback_query(call.id, "❌ Ошибка сервера")
@@ -692,6 +701,13 @@ def handle_reserve_confirmation(call):
             message_id=call.message.message_id,
             text="✅ Вы были переведены в основной состав!"
         )
+
+        notification_text = (
+            f"🔄 Игрок перешел из резерва в основной состав\n"
+            f"Дата: {training_info['training_date'].strftime('%d.%m.%Y')}\n"
+            f"Игрок: {reserve_player}"
+        )
+        send_admin_notification(notification_text)
 
     except Exception as e:
         print(f"Ошибка обработки подтверждения: {e}")
@@ -1199,6 +1215,110 @@ def handle_training_button(call):
     except Exception as e:
         print(f"Ошибка: {e}")
         bot.answer_callback_query(call.id, "❌ Ошибка сервера")
+
+#Подписка на уведомления. Если включена - при отмене записи на тренировку информируем подписавшихся админов
+@bot.message_handler(commands=['subnotify'])
+def subscribe_notifications(message):
+    """Подписка администратора на уведомления"""
+    if not is_admin(message.from_user.id):
+        bot.reply_to(message, "⛔ Недостаточно прав!")
+        return
+
+    try:
+        admin_id = message.from_user.id
+
+        # Читаем текущий config.py
+        with open('config.py', 'r', encoding='utf-8') as f:
+            content = f.read()
+
+        # Проверяем/добавляем список NOTIFICATION_TO
+        if 'NOTIFICATION_TO =' not in content:
+            content += '\nNOTIFICATION_TO = []\n'
+
+        # Ищем текущее определение массива
+        pattern = r'NOTIFICATION_TO\s*=\s*\[([^\]]*)\]'
+        match = re.search(pattern, content)
+
+        if not match:
+            raise ValueError("Не найдено объявление NOTIFICATION_TO в config.py")
+
+        # Получаем текущие ID
+        current_ids = [int(id_.strip()) for id_ in match.group(1).split(',') if id_.strip()]
+
+        # Проверяем, не подписан ли уже
+        if admin_id in current_ids:
+            bot.reply_to(message, "ℹ Вы уже подписаны на уведомления")
+            return
+
+        # Добавляем ID
+        current_ids.append(admin_id)
+        new_ids_str = ', '.join(str(id_) for id_ in current_ids)
+        new_content = re.sub(pattern, f'NOTIFICATION_TO = [{new_ids_str}]', content)
+
+        # Сохраняем изменения
+        with open('config.py', 'w', encoding='utf-8') as f:
+            f.write(new_content)
+
+        # Обновляем текущий массив
+        global NOTIFICATION_TO
+        NOTIFICATION_TO = current_ids
+
+        bot.reply_to(message, "✅ Вы подписались на уведомления об изменениях записей")
+
+    except Exception as e:
+        bot.reply_to(message, f"❌ Ошибка: {str(e)}")
+
+
+@bot.message_handler(commands=['unsubnotify'])
+def unsubscribe_notifications(message):
+    """Отписка от уведомлений"""
+    if not is_admin(message.from_user.id):
+        bot.reply_to(message, "⛔ Недостаточно прав!")
+        return
+
+    try:
+        admin_id = message.from_user.id
+
+        with open('config.py', 'r', encoding='utf-8') as f:
+            content = f.read()
+
+        pattern = r'NOTIFICATION_TO\s*=\s*\[([^\]]*)\]'
+        match = re.search(pattern, content)
+
+        if not match:
+            bot.reply_to(message, "ℹ Вы не подписаны на уведомления")
+            return
+
+        current_ids = [int(id_.strip()) for id_ in match.group(1).split(',') if id_.strip()]
+
+        if admin_id not in current_ids:
+            bot.reply_to(message, "ℹ Вы не подписаны на уведомления")
+            return
+
+        # Удаляем ID
+        current_ids.remove(admin_id)
+        new_ids_str = ', '.join(str(id_) for id_ in current_ids)
+        new_content = re.sub(pattern, f'NOTIFICATION_TO = [{new_ids_str}]', content)
+
+        with open('config.py', 'w', encoding='utf-8') as f:
+            f.write(new_content)
+
+        global NOTIFICATION_TO
+        NOTIFICATION_TO = current_ids
+
+        bot.reply_to(message, "✅ Вы отписались от уведомлений")
+
+    except Exception as e:
+        bot.reply_to(message, f"❌ Ошибка: {str(e)}")
+
+# Функция для отправки уведомлений
+def send_admin_notification(message_text):
+    """Отправляет уведомление всем подписанным админам"""
+    for admin_id in NOTIFICATION_TO:
+        try:
+            bot.send_message(admin_id, message_text)
+        except Exception as e:
+            print(f"Не удалось отправить уведомление админу {admin_id}: {e}")
 
 @bot.message_handler(commands=['help'])
 def show_help(message):
