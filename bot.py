@@ -4,12 +4,12 @@ from threading import Timer
 
 import telebot
 
-from config import ADMIN_IDS, CONFIG_ADMINS, TELEGRAM_TOKEN, TRAINING_CHAT_ID_STAGING
+from config import ADMIN_IDS, CONFIG_ADMINS, TELEGRAM_TOKEN, TRAINING_CHAT_ID_STAGING, TRAINING_CHAT_ID_TEST
 from gsheets import GoogleSheetsClient
 from templates_manager import TemplatesManager
 
-#TRAINING_CHAT_ID = TRAINING_CHAT_ID_TEST
-TRAINING_CHAT_ID = TRAINING_CHAT_ID_STAGING
+TRAINING_CHAT_ID = TRAINING_CHAT_ID_TEST
+#TRAINING_CHAT_ID = TRAINING_CHAT_ID_STAGING
 gsheets = GoogleSheetsClient()
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
 templates_manager = TemplatesManager()
@@ -404,7 +404,7 @@ def handle_training_message(message):
 
 @bot.callback_query_handler(func=lambda call: call.data == 'train_cancel')
 def handle_cancel_registration(call):
-    global training_date
+    global training_date, reserve_player
     try:
         user = call.from_user
 
@@ -536,7 +536,7 @@ def handle_cancel_registration(call):
 
         # Если был перенос из резерва, обновляем запись этого игрока
         if found_in_players and reserves_renumbered != reserves:
-            reserve_user_id = get_user_id_from_message(reserve_player)  # Нужно реализовать эту функцию
+            reserve_user_id = gsheets.get_user_id_by_name(reserve_player)
             if reserve_user_id:
                 gsheets.update_attendance(reserve_user_id, training_date, present=True, role='player')
 
@@ -546,12 +546,6 @@ def handle_cancel_registration(call):
         print(f"Ошибка: {e}")
         bot.answer_callback_query(call.id, "❌ Ошибка сервера")
 
-def get_user_id_from_message(message_text):
-    """Извлекает user_id из строки сообщения (нужно реализовать)"""
-    # Здесь должна быть логика извлечения user_id из строки вида "1. Имя Фамилия @username"
-    # Можно искать в базе данных по имени или username
-    # Возвращает user_id или None если не найден
-    return None
 
 def store_training_message(message):
     """Сохраняет сообщение о тренировке для быстрого доступа"""
@@ -903,6 +897,7 @@ def handle_register(message):
             reply_markup=types.ForceReply()
         )
         bot.register_next_step_handler(msg, lambda m: save_registration(m, user))
+        gsheets.clear_cache()
 
     except Exception as e:
         bot.reply_to(message, f"❌ Ошибка: {e}")

@@ -18,12 +18,17 @@ class GoogleSheetsClient:
         self.client = gspread.authorize(self.creds)
         self._init_worksheet()
         self._user_cache = {}
+        self._name_to_id_cache = {}
         self._last_cache_update = datetime.min
 
     def clear_cache(self):
-        """Очищает кэш пользователей"""
+        """Очищает все кэши"""
         self._user_cache = {}
+        self._name_to_id_cache = {}
         self._last_cache_update = datetime.min
+        # Очищаем LRU кэши декорированных функций
+        self.get_user_record.cache_clear()
+        self.get_user_id_by_name.cache_clear()
 
     def _check_cache_expiry(self):
         """Проверяет истек ли срок действия кэша (5 минут)"""
@@ -130,6 +135,45 @@ class GoogleSheetsClient:
         else:
             self._user_cache.pop(str(user_id), None)
             self.get_user_record.cache_clear()  # Очищаем LRU кэш
+
+    @functools.lru_cache(maxsize=1000)
+    def get_user_id_by_name(self, message):
+        """Возвращает user_id по ФИО пользователя с кэшированием"""
+        try:
+            self._check_cache_expiry()
+
+            # Проверяем кэш
+            if message in self._name_to_id_cache:
+                return self._name_to_id_cache[message]
+
+            # Если нет в кэше, ищем в таблице
+            cell = self.worksheet.find(message)
+            if cell:
+                # Предполагаем, что ФИО находится в 3 колонке (как в get_user_record)
+                if cell.col != 4:
+                    # Если нашли не в той колонке, ищем правильно
+                    for row in self.worksheet.get_all_values():
+                        if len(row) > 3 and row[3] == message:
+                            user_id = row[0] if len(row) > 0 else None
+                            if user_id:
+                                # Сохраняем в кэш
+                                self._name_to_id_cache[message] = user_id
+                                self._last_cache_update = datetime.now()
+                                return user_id
+                    return None
+
+                # Если нашли в правильной колонке
+                user_id = self.worksheet.cell(cell.row, 1).value  # 1 колонка - user_id
+                if user_id:
+                    # Сохраняем в кэш
+                    self._name_to_id_cache[message] = user_id
+                    self._last_cache_update = datetime.now()
+                    return user_id
+
+            return None
+        except Exception as e:
+            print(f"Ошибка при поиске user_id по ФИО: {e}")
+            return None
 
     def get_attendance_sheet(self):
         """Возвращает лист с графиком посещений, создает если не существует"""
