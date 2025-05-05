@@ -279,36 +279,71 @@ def process_player_limit(message):
         # Сохраняем лимит в состоянии
         training_states[message.from_user.id]['player_limit'] = player_limit
 
-        # Получаем шаблон
-        template = templates_manager.get_template(training_states[message.from_user.id]['template_name'])
-
-        # Формируем текст сообщения с лимитом
-        train_text = template.format(
-            date=training_states[message.from_user.id]['date'],
-            location="[место из шаблона]",
-            details="[детали из шаблона]"
-        ) + f"\n\nЛимит игроков: {player_limit}\n\nСписок красавчиков:\nИгроки:\nВратари:\nРезерв:"
-
-        # Создаем клавиатуру подтверждения
-        markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
-        markup.add(types.KeyboardButton("✅ Создать"), types.KeyboardButton("❌ Отмена"))
-
-        # Показываем превью
-        bot.send_message(
-            message.chat.id,
-            f"📝 Превью сообщения:\n\n{train_text}\n\n"
-            "Подтвердите создание тренировки:",
-            reply_markup=markup
-        )
-
-        # Обновляем состояние
-        training_states[message.from_user.id]['step'] = 'confirm_creation'
-        training_states[message.from_user.id]['train_text'] = train_text
+        # Запрашиваем список игроков (опционально)
+        msg = bot.reply_to(message,
+                           "📝 Хотите добавить игроков сразу? Отправьте список ФИО (каждое с новой строки)\n"
+                           "Или отправьте '0' чтобы пропустить этот шаг")
+        bot.register_next_step_handler(msg, process_players_list)
 
     except Exception as e:
         bot.reply_to(message, f"❌ Ошибка: {str(e)}")
         del training_states[message.from_user.id]
 
+
+def process_players_list(message):
+    try:
+        user_id = message.from_user.id
+        if user_id not in training_states:
+            return
+
+        state = training_states[user_id]
+
+        # Если пропускаем добавление игроков
+        if message.text.strip() == '0':
+            return finalize_training_creation(message)
+
+        # Обрабатываем список игроков
+        players_list = []
+        unregistered_players = []
+
+        for line in message.text.split('\n'):
+            if not line.strip():
+                continue
+
+            # Очищаем ФИО от нумерации (1., 2. и т.д.) и спецсимволов
+            clean_line = re.sub(r'^\d+\.?\s*', '', line.strip())  # Удаляем нумерацию
+            clean_name = re.sub(r'[^a-zA-Zа-яА-ЯёЁ\s]', '', clean_line).strip()
+
+            if not clean_name:
+                continue
+
+            # Ищем пользователя
+            user_data = gsheets.find_user_by_name(clean_name)
+            if not user_data or not user_data.get('user_id'):
+                unregistered_players.append(clean_name)
+                continue
+
+            players_list.append({
+                'name': clean_name,
+                'user_id': user_data['user_id']
+            })
+
+        # Если есть незарегистрированные игроки
+        if unregistered_players:
+            error_msg = "❌ Эти игроки не зарегистрированы:\n" + "\n".join(unregistered_players)
+            bot.reply_to(message, error_msg)
+            return None
+
+        # Сохраняем список игроков в состоянии
+        state['predefined_players'] = players_list
+
+        # Продолжаем создание тренировки
+        finalize_training_creation(message)
+
+    except Exception as e:
+        bot.reply_to(message, f"❌ Ошибка: {str(e)}")
+        if user_id in training_states:
+            del training_states[user_id]
 
 def process_date_input(message):
     user_id = message.from_user.id
@@ -371,6 +406,30 @@ def finalize_training_creation(message):
             return
 
         state = training_states[message.from_user.id]
+        template = templates_manager.get_template(state['template_name'])
+
+        # Формируем текст тренировки
+        train_text = template.format(
+            date=state['date'],
+            location="[место из шаблона]",
+            details="[детали из шаблона]"
+        ) + f"\n\nЛимит игроков: {state.get('player_limit', 0)}\n\nСписок:\nИгроки:\nВратари:\nРезерв:"
+
+        # Добавляем предопределенных игроков
+        if 'predefined_players' in state:
+            players = []
+            for player in state['predefined_players']:
+                players.append(f"{len(players) + 1}. {player['name']}")
+                # Обновляем посещаемость
+                gsheets.update_attendance(
+                    player['user_id'],
+                    datetime.strptime(state['date'], '%d.%m.%Y %H:%M').date(),
+                    present=True,
+                    role='player'
+                )
+
+            # Вставляем игроков в текст
+            train_text = train_text.replace("Игроки:", f"Игроки:\n" + "\n".join(players))
 
         markup = types.InlineKeyboardMarkup()
         markup.row(
@@ -383,7 +442,7 @@ def finalize_training_creation(message):
 
         sent_message = bot.send_message(
             chat_id=TRAINING_CHAT_ID,
-            text=state['train_text'],
+            text=train_text,
             reply_markup=markup
         )
         store_training_message(sent_message)
@@ -1434,4 +1493,4 @@ cleanup_messages_store()
 
 if __name__ == '__main__':
     print("Бот запущен. Ожидание команд")
-    bot.polling(none_stop=True)
+    bot.polling()

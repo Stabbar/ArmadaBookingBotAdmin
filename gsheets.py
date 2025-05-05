@@ -1,3 +1,4 @@
+import re
 from datetime import datetime, timedelta
 import functools
 import gspread
@@ -173,6 +174,31 @@ class GoogleSheetsClient:
             return None
         except Exception as e:
             print(f"Ошибка при поиске user_id по ФИО: {e}")
+            return None
+
+    @functools.lru_cache(maxsize=1000)
+    def find_user_by_name(self, name):
+        """Ищет пользователя по ФИО с очисткой строки и кэшированием"""
+        try:
+            # Очищаем имя от лишних символов и нумерации
+            clean_name = re.sub(r'^\d+\.?\s*', '', name)  # Удаляем нумерацию (1., 2 и т.д.)
+            clean_name = re.sub(r'[^a-zA-Zа-яА-ЯёЁ\s]', '', clean_name).strip()
+
+            if not clean_name:
+                return None
+
+            # Используем существующую логику поиска
+            user_id = self.get_user_id_by_name(clean_name)
+
+            if user_id:
+                return {
+                    'user_id': user_id,
+                    'full_name': clean_name
+                }
+            return None
+
+        except Exception as e:
+            print(f"Ошибка поиска пользователя по имени: {e}")
             return None
 
     def get_attendance_sheet(self):
