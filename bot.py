@@ -4,12 +4,15 @@ from threading import Timer
 
 import telebot
 
-from config import ADMIN_IDS, CONFIG_ADMINS, TELEGRAM_TOKEN, TRAINING_CHAT_ID_STAGING, TRAINING_CHAT_ID_TEST, NOTIFICATION_TO
+from config import ADMIN_IDS, CONFIG_ADMINS, TELEGRAM_TOKEN, TRAINING_CHAT_ID_STAGING, TRAINING_CHAT_ID_TEST, \
+    NOTIFICATION_TO, BIG_CHAT_ID_TEST
 from gsheets import GoogleSheetsClient
 from templates_manager import TemplatesManager
 
 TRAINING_CHAT_ID = TRAINING_CHAT_ID_TEST
+BIG_CHAT_ID = BIG_CHAT_ID_TEST
 #TRAINING_CHAT_ID = TRAINING_CHAT_ID_STAGING
+#BIG_CHAT_ID = BIG_CHAT_ID_PROD
 gsheets = GoogleSheetsClient()
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
 templates_manager = TemplatesManager()
@@ -420,7 +423,6 @@ def finalize_training_creation(message):
             players = []
             for player in state['predefined_players']:
                 players.append(f"{len(players) + 1}. {player['name']}")
-                # Обновляем посещаемость
                 gsheets.update_attendance(
                     player['user_id'],
                     datetime.strptime(state['date'], '%d.%m.%Y %H:%M').date(),
@@ -428,23 +430,28 @@ def finalize_training_creation(message):
                     role='player'
                 )
 
-            # Вставляем игроков в текст
             train_text = train_text.replace("Игроки:", f"Игроки:\n" + "\n".join(players))
 
+        # Создаем клавиатуру с кнопкой завершения предзаписи
         markup = types.InlineKeyboardMarkup()
         markup.row(
             types.InlineKeyboardButton("Игрок", callback_data='train_role_player'),
             types.InlineKeyboardButton("Вратарь", callback_data='train_role_goalie')
         )
         markup.row(
-            types.InlineKeyboardButton("❌ Отменить запись", callback_data='train_cancel')
+            types.InlineKeyboardButton("❌ Отменить запись", callback_data='train_cancel'),
+            types.InlineKeyboardButton("✅ Завершить предзапись", callback_data='finish_prereg')
         )
 
+        # Публикуем сообщение в чате предварительной записи
         sent_message = bot.send_message(
             chat_id=TRAINING_CHAT_ID,
             text=train_text,
             reply_markup=markup
         )
+
+        # Сохраняем данные сообщения
+        state['pre_reg_message_id'] = sent_message.message_id
         store_training_message(sent_message)
 
         bot.send_message(
@@ -458,6 +465,63 @@ def finalize_training_creation(message):
     finally:
         if message.from_user.id in training_states:
             del training_states[message.from_user.id]
+
+
+# Обработчик кнопки завершения предзаписи
+@bot.callback_query_handler(func=lambda call: call.data == 'finish_prereg')
+def handle_finish_preregistration(call):
+    try:
+        # Проверяем права администратора
+        if not is_admin(call.from_user.id):
+            bot.answer_callback_query(call.id, "⛔ Недостаточно прав!", show_alert=True)
+            return
+
+        # Получаем текст и данные сообщения
+        message_text = call.message.text
+        date_match = re.search(r'(\d{2}\.\d{2}\.\d{4})', message_text)
+        if not date_match:
+            raise ValueError("Не удалось определить дату тренировки")
+
+        date_str = date_match.group(1)
+
+        # Создаем клавиатуру для основного чата
+        markup = types.InlineKeyboardMarkup()
+        markup.row(
+            types.InlineKeyboardButton("Игрок", callback_data='train_role_player'),
+            types.InlineKeyboardButton("Вратарь", callback_data='train_role_goalie')
+        )
+        markup.row(
+            types.InlineKeyboardButton("❌ Отменить запись", callback_data='train_cancel')
+        )
+
+        # Публикуем сообщение в основном чате
+        new_message = bot.send_message(
+            chat_id=BIG_CHAT_ID,
+            text=message_text,
+            reply_markup=markup
+        )
+
+        # Сохраняем новое сообщение в хранилище
+        store_training_message(new_message)
+
+        # Удаляем сообщение из чата предварительной записи
+        bot.delete_message(
+            chat_id=TRAINING_CHAT_ID,
+            message_id=call.message.message_id
+        )
+
+        # Обновляем хранилище - удаляем старое сообщение
+        if date_str in training_messages_store:
+            training_messages_store[date_str] = [
+                msg for msg in training_messages_store[date_str]
+                if msg['message_id'] != call.message.message_id
+            ]
+
+        bot.answer_callback_query(call.id, "✅ Предзапись завершена, сообщение перемещено в основной чат")
+
+    except Exception as e:
+        print(f"Ошибка завершения предзаписи: {e}")
+        bot.answer_callback_query(call.id, "❌ Ошибка при завершении предзаписи")
 
 @bot.message_handler(func=lambda m: m.chat.id == TRAINING_CHAT_ID and "тренировка" in m.text.lower())
 def handle_training_message(message):
@@ -774,22 +838,19 @@ def handle_reserve_confirmation(call):
 
 
 def store_training_message(message):
-    """Сохраняет сообщение о тренировке для быстрого доступа"""
+    """Сохраняет сообщение о тренировке с учетом чата"""
     try:
-        # Парсим дату из сообщения с помощью регулярного выражения
         date_match = re.search(r'(\d{2}\.\d{2}\.\d{4})', message.text)
-        if not date_match:
-            return
+        if date_match:
+            date_str = date_match.group(1)
+            if date_str not in training_messages_store:
+                training_messages_store[date_str] = []
 
-        date_str = date_match.group(1)
-        if date_str not in training_messages_store:
-            training_messages_store[date_str] = []
-
-        training_messages_store[date_str].append({
-            'chat_id': message.chat.id,
-            'message_id': message.message_id,
-            'text': message.text
-        })
+            training_messages_store[date_str].append({
+                'chat_id': message.chat.id,  # Сохраняем ID чата
+                'message_id': message.message_id,
+                'text': message.text
+            })
     except Exception as e:
         print(f"Ошибка сохранения сообщения: {e}")
 
