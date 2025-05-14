@@ -1,5 +1,6 @@
 import os
 import re
+import threading
 from threading import Timer
 
 import telebot
@@ -1173,11 +1174,33 @@ def handle_register(message):
     try:
         user = message.from_user
 
+        # Проверка регистрации
         if gsheets.is_user_exists(user.id):
-            bot.reply_to(message, "⚠️ Вы уже зарегистрированы!")
+            reply = bot.reply_to(message, "⚠️ Вы уже зарегистрированы!")
+            # Удаляем только в групповых чатах
+            if message.chat.type != 'private':
+                threading.Timer(300, lambda: bot.delete_message(message.chat.id, reply.message_id)).start()
             return
 
-        # Запрос ФИО
+        # Проверка типа чата
+        if message.chat.type != 'private':
+            markup = types.InlineKeyboardMarkup()
+            url_button = types.InlineKeyboardButton(
+                text="Перейти в личный чат с ботом",
+                url=f"tg://resolve?domain={bot.get_me().username}"
+            )
+            markup.add(url_button)
+
+            sent_msg = bot.reply_to(
+                message,
+                "⚠️ Пожалуйста, продолжите регистрацию в личных сообщениях с ботом",
+                reply_markup=markup
+            )
+            # Удаляем через 5 минут только в групповых чатах
+            threading.Timer(300, lambda: bot.delete_message(message.chat.id, sent_msg.message_id)).start()
+            return
+
+        # Процесс регистрации в ЛС
         msg = bot.send_message(
             message.chat.id,
             "Введите ваши Фамилию и Имя через пробел:",
@@ -1187,23 +1210,34 @@ def handle_register(message):
         gsheets.clear_cache()
 
     except Exception as e:
-        bot.reply_to(message, f"❌ Ошибка: {e}")
+        error_msg = bot.reply_to(message, f"❌ Ошибка: {e}")
+        # Удаляем ошибку только в групповых чатах
+        if message.chat.type != 'private':
+            threading.Timer(300, lambda: bot.delete_message(message.chat.id, error_msg.message_id)).start()
 
 
 def save_registration(message, user):
     try:
         full_name = message.text.strip()
         if len(full_name.split()) < 2:
-            raise ValueError("Требуется ввести и Фамилию и Имя")
+            error_msg = bot.reply_to(message, "❌ Требуется ввести и Фамилию и Имя")
+            # Сообщения в ЛС не удаляем
+            if message.chat.type != 'private':
+                threading.Timer(300, lambda: bot.delete_message(message.chat.id, error_msg.message_id)).start()
+            return
 
         if gsheets.add_record(user, full_name):
             bot.reply_to(message, f"✅ Данные сохранены:\nИмя: {full_name}")
+            # Успешное сообщение в ЛС остается
         else:
-            bot.reply_to(message, "❌ Ошибка при сохранении!")
+            error_msg = bot.reply_to(message, "❌ Ошибка при сохранении!")
+            if message.chat.type != 'private':
+                threading.Timer(300, lambda: bot.delete_message(message.chat.id, error_msg.message_id)).start()
 
     except Exception as e:
-        bot.reply_to(message, f"❌ Ошибка: {e}")
-
+        error_msg = bot.reply_to(message, f"❌ Ошибка: {e}")
+        if message.chat.type != 'private':
+            threading.Timer(300, lambda: bot.delete_message(message.chat.id, error_msg.message_id)).start()
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith('train_role_'))
 def handle_training_button(call):
