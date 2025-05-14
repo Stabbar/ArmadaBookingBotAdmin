@@ -10,10 +10,10 @@ from config import ADMIN_IDS, CONFIG_ADMINS, TELEGRAM_TOKEN, TRAINING_CHAT_ID_ST
 from gsheets import GoogleSheetsClient
 from templates_manager import TemplatesManager
 
-#TRAINING_CHAT_ID = TRAINING_CHAT_ID_TEST
-#BIG_CHAT_ID = BIG_CHAT_ID_TEST
-TRAINING_CHAT_ID = TRAINING_CHAT_ID_PROD
-BIG_CHAT_ID = BIG_CHAT_ID_PROD
+TRAINING_CHAT_ID = TRAINING_CHAT_ID_TEST
+BIG_CHAT_ID = BIG_CHAT_ID_TEST
+#TRAINING_CHAT_ID = TRAINING_CHAT_ID_PROD
+#BIG_CHAT_ID = BIG_CHAT_ID_PROD
 gsheets = GoogleSheetsClient()
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
 templates_manager = TemplatesManager()
