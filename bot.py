@@ -1228,7 +1228,6 @@ def save_registration(message, user):
 
         if gsheets.add_record(user, full_name):
             bot.reply_to(message, f"✅ Данные сохранены:\nИмя: {full_name}")
-            # Успешное сообщение в ЛС остается
         else:
             error_msg = bot.reply_to(message, "❌ Ошибка при сохранении!")
             if message.chat.type != 'private':
