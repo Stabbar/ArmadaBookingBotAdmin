@@ -687,7 +687,7 @@ def handle_cancel_registration(call):
         # 10. Уведомляем пользователя
         bot.answer_callback_query(call.id, "✅ Ваша запись отменена!")
 
-        player_name = user_data.get('full_name', user_data.get('message', 'Неизвестный игрок'))
+        player_name = user_data.get('message', user_data.get('message', 'Неизвестный игрок'))
         notification_text = (
             f"⚠️ Игрок отменил запись на тренировку\n"
             f"Дата: {training_date.strftime('%d.%m.%Y')}\n"
