@@ -417,7 +417,7 @@ def finalize_training_creation(message):
             date=state['date'],
             location="[место из шаблона]",
             details="[детали из шаблона]"
-        ) + f"\n\nЛимит игроков: {state.get('player_limit', 0)}\n\nСписок:\nИгроки:\nВратари:\nРезерв:"
+        ) + f"\n\nЛимит игроков: {state.get('player_limit', 0)}\n\nСписок красавчиков:\nИгроки:\nВратари:\nРезерв:"
 
         # Добавляем предопределенных игроков
         if 'predefined_players' in state:
