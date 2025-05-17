@@ -556,6 +556,7 @@ def handle_cancel_registration(call):
         found_in_players = False
         found_in_reserves = False
         found_in_goalies = False
+        player_number = None
         player_limit = 0
 
         # 3. Парсим лимит игроков
@@ -580,6 +581,8 @@ def handle_cancel_registration(call):
                 other_lines.append(line)
             elif line.strip().startswith(('1.', '2.', '3.', '4.', '5.', '6.', '7.', '8.', '9.')):
                 if user_message in line:
+                    # Запоминаем номер игрока
+                    player_number = line.split('.')[0].strip()
                     if current_section == "players":
                         found_in_players = True
                     elif current_section == "reserves":
@@ -689,11 +692,15 @@ def handle_cancel_registration(call):
         bot.answer_callback_query(call.id, "✅ Ваша запись отменена!")
 
         player_name = user_data.get('message', user_data.get('message', 'Неизвестный игрок'))
+        section_name = 'основном составе' if found_in_players else 'резерве' if found_in_reserves else 'вратарях'
+
+        # Формируем текст уведомления с номером игрока
         notification_text = (
             f"⚠️ Игрок отменил запись на тренировку\n"
             f"Дата: {training_date.strftime('%d.%m.%Y')}\n"
             f"Игрок: {player_name}\n"
-            f"Был в: {'основном составе' if found_in_players else 'резерве' if found_in_reserves else 'вратарях'}"
+            f"Был в: {section_name}\n"
+            f"Номер в списке: {player_number}"  # Добавлен номер игрока
         )
         send_admin_notification(notification_text)
 
