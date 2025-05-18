@@ -1594,4 +1594,4 @@ cleanup_messages_store()
 
 if __name__ == '__main__':
     print("Бот запущен. Ожидание команд")
-    bot.polling()
+    bot.infinity_polling(none_stop=True)
